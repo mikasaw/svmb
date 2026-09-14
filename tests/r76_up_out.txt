@@ -1,0 +1,2 @@
+[!] CR3_PROT unprotect failed (err 31)
+protected regions: 1

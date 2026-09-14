@@ -1,0 +1,169 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{D1A0C7E2-4B8F-4E3D-9C21-5FA6B7E80001}</ProjectGuid>
+    <TemplateGuid>{dd38f7fc-d7bd-488b-9242-7d8754cde80d}</TemplateGuid>
+    <MinimumVisualStudioVersion>12.0</MinimumVisualStudioVersion>
+    <Configuration>Debug</Configuration>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+    <RootNamespace>svmb</RootNamespace>
+    <ProjectName>svmb</ProjectName>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>WDM</DriverType>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>WindowsKernelModeDriver10.0</PlatformToolset>
+    <ConfigurationType>Driver</ConfigurationType>
+    <DriverType>WDM</DriverType>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <!-- Pin output to the repo-root x64 dir so building via the .sln (VS IDE)
+       and building this .vcxproj directly with msbuild converge on the same
+       artifacts. MUST live after the Microsoft.Cpp.props import: the WDK
+       props chain sets its own OutDir/IntDir and would override a value in
+       the Label="Configuration" group above. $(ProjectDir)-relative because
+       $(SolutionDir) is undefined in the direct-project case. -->
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)..\x64\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)obj\$(Configuration)\</IntDir>
+  </PropertyGroup>
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <SignMode>Off</SignMode>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <SignMode>Off</SignMode>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)inc;$(ProjectDir)..\shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NTDDI_VERSION=NTDDI_WIN10;SVMB_LOG_FORCE_VISIBLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>wdmsec.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+    <MASM>
+      <IncludePaths>$(ProjectDir)src\hw\asm;%(IncludePaths)</IncludePaths>
+    </MASM>
+    <DriverSign>
+      <AdditionalOptions>/fd SHA256 %(AdditionalOptions)</AdditionalOptions>
+    </DriverSign>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;$(ProjectDir)inc;$(ProjectDir)..\shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>NTDDI_VERSION=NTDDI_WIN10;SVMB_LOG_FORCE_VISIBLE;SVMB_PRODUCTION;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>wdmsec.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>
+    </Link>
+    <MASM>
+      <IncludePaths>$(ProjectDir)src\hw\asm;%(IncludePaths)</IncludePaths>
+    </MASM>
+    <DriverSign>
+      <AdditionalOptions>/fd SHA256 %(AdditionalOptions)</AdditionalOptions>
+    </DriverSign>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <FilesToPackage Include="$(TargetPath)" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp" />
+    <ClCompile Include="src\core\hypervisor.cpp" />
+    <ClCompile Include="src\core\exit_dispatcher.cpp" />
+    <ClCompile Include="src\core\intercept_manager.cpp" />
+    <ClCompile Include="src\core\hypercall.cpp" />
+    <ClCompile Include="src\core\crumbs.cpp" />
+    <ClCompile Include="src\core\module.cpp" />
+    <ClCompile Include="src\core\npt_probe.cpp" />
+    <ClCompile Include="src\modules\demo_cpuid.cpp" />
+    <ClCompile Include="src\hw\segments.cpp" />
+    <ClCompile Include="src\hw\msrpm.cpp" />
+    <ClCompile Include="src\platform\util.cpp" />
+    <ClCompile Include="src\platform\logger.cpp" />
+    <ClCompile Include="src\platform\offsets.cpp" />
+    <ClCompile Include="src\mm\phys_mem.cpp" />
+    <ClCompile Include="src\mm\npt.cpp" />
+    <ClCompile Include="src\mm\offline_tests.cpp" />
+    <ClCompile Include="src\mm\tlb.cpp" />
+    <ClCompile Include="src\mm\npf.cpp" />
+    <ClCompile Include="src\mm\insn_len.cpp" />
+    <ClCompile Include="src\modules\npt_hook_mgr.cpp" />
+    <ClCompile Include="src\modules\cr3_seed.cpp" />
+    <ClCompile Include="src\modules\dbg_events.cpp" />
+    <ClCompile Include="src\modules\debugger.cpp" />
+    <ClCompile Include="src\modules\cr3_monitor.cpp" />
+    <ClCompile Include="src\modules\mem_read.cpp" />
+    <ClCompile Include="src\modules\stealth.cpp" />
+    <ClCompile Include="src\modules\sysaudit.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\platform\base.h" />
+    <ClInclude Include="src\mm\phys_mem.h" />
+    <ClInclude Include="src\mm\npt.h" />
+    <ClInclude Include="src\mm\offline_tests.h" />
+    <ClInclude Include="src\mm\tlb.h" />
+    <ClInclude Include="src\mm\npf.h" />
+    <ClInclude Include="src\mm\insn_len.h" />
+    <ClInclude Include="src\modules\npt_hook_mgr.h" />
+    <ClInclude Include="src\core\npt_probe.h" />
+    <ClInclude Include="src\modules\cr3_seed.h" />
+    <ClInclude Include="src\modules\mem_read.h" />
+    <ClInclude Include="src\modules\stealth.h" />
+    <ClInclude Include="src\modules\sysaudit.h" />
+    <ClInclude Include="src\modules\dbg_events.h" />
+    <ClInclude Include="src\platform\util.h" />
+    <ClInclude Include="src\platform\logger.h" />
+    <ClInclude Include="src\platform\offsets.h" />
+    <ClInclude Include="src\hw\svm_defs.h" />
+    <ClInclude Include="src\hw\vmcb.h" />
+    <ClInclude Include="src\hw\segments.h" />
+    <ClInclude Include="src\hw\msrpm.h" />
+    <ClInclude Include="src\core\regs.h" />
+    <ClInclude Include="src\core\vcpu.h" />
+    <ClInclude Include="src\core\hypervisor.h" />
+    <ClInclude Include="src\core\exit_dispatcher.h" />
+    <ClInclude Include="src\core\intercept_manager.h" />
+    <ClInclude Include="src\core\hypercall.h" />
+    <ClInclude Include="src\core\module.h" />
+    <ClInclude Include="inc\svmb\module_api.h" />
+    <ClInclude Include="..\shared\svmb_protocol.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <MASM Include="src\hw\asm\svm_entry.asm" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>

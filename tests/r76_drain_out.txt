@@ -1,0 +1,132 @@
+[0] r13-cfgvmcb: cpu0 ConfigureVmcb enter (vmcb=FFFFA7009C529000)
+[0] cfgvmcb knobs: tlbMode=0 asid=1
+[0] intercept apply: cpu=0 exc=0000 crR=0000 crW=0000 drR=0000 drW=0000 op1=10040000 op2=00000001 mtf=0
+[0] r13-entercore: cpu=0 ConfigureVmcb done, NP_ENABLE=1 NCr3=4b110000 InterceptOpcode1=10040000 InterceptOpcode2=00000001 InterceptExc=00000000 TlbControl=3 GuestAsid=1
+[0] vmrun cpu=0 vmcb=13bda8000 EFER=5d01 (SVME=1) ExitCode_pre=0
+[0] r13-vmrun-fire: cpu=0 about to _svmb_vmm_loop
+[0] exit trace: code=72 rip=7ffe428a0672 nrip=7ffe428a0674 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe428a06b6 nrip=7ffe428a06b8 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe428a0753 nrip=7ffe428a0755 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe428a0672 nrip=7ffe428a0674 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe428a06b6 nrip=7ffe428a06b8 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe428a0753 nrip=7ffe428a0755 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe41c37782 nrip=7ffe41c37784 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe41c377c6 nrip=7ffe41c377c8 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe41c37863 nrip=7ffe41c37865 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe41c37782 nrip=7ffe41c37784 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe41c377c6 nrip=7ffe41c377c8 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe41c37863 nrip=7ffe41c37865 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe41bd7c2a nrip=7ffe41bd7c2c cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe41bd7c6e nrip=7ffe41bd7c70 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe41bd7d0b nrip=7ffe41bd7d0d cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7ffe41bd7c2a nrip=7ffe41bd7c2c cpl=0 svme=1 info1=0
+[1] intercept apply: cpu=1 exc=0000 crR=0000 crW=0000 drR=0000 drW=0000 op1=10040000 op2=00000001 mtf=0
+[1] r13-entercore: cpu=1 ConfigureVmcb done, NP_ENABLE=1 NCr3=4b110000 InterceptOpcode1=10040000 InterceptOpcode2=00000001 InterceptExc=00000000 TlbControl=3 GuestAsid=1
+[1] vmrun cpu=1 vmcb=13bda3000 EFER=5d01 (SVME=1) ExitCode_pre=0
+[1] r13-vmrun-fire: cpu=1 about to _svmb_vmm_loop
+[1] exit trace: code=72 rip=7ffe42a46716 nrip=7ffe42a46718 cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe42a4675a nrip=7ffe42a4675c cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe42a467f7 nrip=7ffe42a467f9 cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe42a46716 nrip=7ffe42a46718 cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe42a4675a nrip=7ffe42a4675c cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe42a467f7 nrip=7ffe42a467f9 cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe42a1f6a9 nrip=7ffe42a1f6ab cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe427fe173 nrip=7ffe427fe175 cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe427fe257 nrip=7ffe427fe259 cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe427fe257 nrip=7ffe427fe259 cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe427fe1c4 nrip=7ffe427fe1c6 cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe427fe1f2 nrip=7ffe427fe1f4 cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe4281fd10 nrip=7ffe4281fd12 cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe427fe20e nrip=7ffe427fe210 cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe433005fe nrip=7ffe43300600 cpl=0 svme=1 info1=0
+[1] exit trace: code=72 rip=7ffe43300642 nrip=7ffe43300644 cpl=0 svme=1 info1=0
+[2] intercept apply: cpu=2 exc=0000 crR=0000 crW=0000 drR=0000 drW=0000 op1=10040000 op2=00000001 mtf=0
+[2] r13-entercore: cpu=2 ConfigureVmcb done, NP_ENABLE=1 NCr3=4b110000 InterceptOpcode1=10040000 InterceptOpcode2=00000001 InterceptExc=00000000 TlbControl=3 GuestAsid=1
+[2] vmrun cpu=2 vmcb=13bd8b000 EFER=5d01 (SVME=1) ExitCode_pre=0
+[2] r13-vmrun-fire: cpu=2 about to _svmb_vmm_loop
+[2] exit trace: code=72 rip=fffff8072f17e943 nrip=fffff8072f17e945 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f26d7c5 nrip=fffff8072f26d7c7 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f17e943 nrip=fffff8072f17e945 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f26d7c5 nrip=fffff8072f26d7c7 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f2743e3 nrip=fffff8072f2743e5 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f17e943 nrip=fffff8072f17e945 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f26d7c5 nrip=fffff8072f26d7c7 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f2743e3 nrip=fffff8072f2743e5 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f2741f5 nrip=fffff8072f2741f7 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f17e943 nrip=fffff8072f17e945 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f26d7c5 nrip=fffff8072f26d7c7 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f17e943 nrip=fffff8072f17e945 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f26d7c5 nrip=fffff8072f26d7c7 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f2743e3 nrip=fffff8072f2743e5 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f17e943 nrip=fffff8072f17e945 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8072f26d7c5 nrip=fffff8072f26d7c7 cpl=0 svme=1 info1=0
+[3] intercept apply: cpu=3 exc=0000 crR=0000 crW=0000 drR=0000 drW=0000 op1=10040000 op2=00000001 mtf=0
+[3] r13-entercore: cpu=3 ConfigureVmcb done, NP_ENABLE=1 NCr3=4b110000 InterceptOpcode1=10040000 InterceptOpcode2=00000001 InterceptExc=00000000 TlbControl=3 GuestAsid=1
+[3] vmrun cpu=3 vmcb=13bd3b000 EFER=5d01 (SVME=1) ExitCode_pre=0
+[3] r13-vmrun-fire: cpu=3 about to _svmb_vmm_loop
+[3] exit trace: code=72 rip=7ffe44c0d272 nrip=7ffe44c0d274 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=7ffe44c0d2b6 nrip=7ffe44c0d2b8 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=7ffe44c0d353 nrip=7ffe44c0d355 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=7ffe44c0d272 nrip=7ffe44c0d274 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=7ffe44c0d2b6 nrip=7ffe44c0d2b8 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=7ffe44c0d353 nrip=7ffe44c0d355 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=7ffe44294752 nrip=7ffe44294754 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=7ffe44294796 nrip=7ffe44294798 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=7ffe44294833 nrip=7ffe44294835 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=7ffe44294752 nrip=7ffe44294754 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=7ffe44294796 nrip=7ffe44294798 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=7ffe44294833 nrip=7ffe44294835 cpl=0 svme=1 info1=0
+[4] intercept apply: cpu=4 exc=0000 crR=0000 crW=0000 drR=0000 drW=0000 op1=10040000 op2=00000001 mtf=0
+[4] r13-entercore: cpu=4 ConfigureVmcb done, NP_ENABLE=1 NCr3=4b110000 InterceptOpcode1=10040000 InterceptOpcode2=00000001 InterceptExc=00000000 TlbControl=3 GuestAsid=1
+[4] vmrun cpu=4 vmcb=13bd22000 EFER=5d01 (SVME=1) ExitCode_pre=0
+[4] r13-vmrun-fire: cpu=4 about to _svmb_vmm_loop
+[4] exit trace: code=72 rip=fffff8072f17e943 nrip=fffff8072f17e945 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f26d7c5 nrip=fffff8072f26d7c7 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f17e943 nrip=fffff8072f17e945 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f26d7c5 nrip=fffff8072f26d7c7 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f2743e3 nrip=fffff8072f2743e5 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f17e943 nrip=fffff8072f17e945 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f26d7c5 nrip=fffff8072f26d7c7 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f2743e3 nrip=fffff8072f2743e5 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f2741f5 nrip=fffff8072f2741f7 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f17e943 nrip=fffff8072f17e945 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f26d7c5 nrip=fffff8072f26d7c7 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f17e943 nrip=fffff8072f17e945 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f26d7c5 nrip=fffff8072f26d7c7 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f2743e3 nrip=fffff8072f2743e5 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f17e943 nrip=fffff8072f17e945 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=fffff8072f26d7c5 nrip=fffff8072f26d7c7 cpl=0 svme=1 info1=0
+[4] prot: REGISTER id=1 pid=4836 base=12d174000 pages=1 oldProt=00000004 (L1 readonly + L2 deny)
+[5] uart probe lsr=ff iir=ff
+[5] tlb knobs: tlbMode=0 asid=1
+[5] config: serial=1 hideCpuid=1 protectHsave=0 nptEnable=1 tlbMode=0 asid=1
+[5] prot: death notify st=00000000
+[5] NPT enabled (ncr3=4b110000)
+[5] exp1: AutoStart - entering virtualization at DriverEntry
+[5] svm check: CPUID.80000001.ECX=00c003ff (SVM=1)
+[5] svm check: OK (AMD cpu, SVM bit=1, VM_CR.SVMDIS=0, NPT+NRIPS supported)
+[5] r13-start: Running_=true, RunOnEachCore(6 cores) about to vmrun
+[5] intercept apply: cpu=5 exc=0000 crR=0000 crW=0000 drR=0000 drW=0000 op1=10040000 op2=00000001 mtf=0
+[5] r13-entercore: cpu=5 ConfigureVmcb done, NP_ENABLE=1 NCr3=4b110000 InterceptOpcode1=10040000 InterceptOpcode2=00000001 InterceptExc=00000000 TlbControl=3 GuestAsid=1
+[5] vmrun cpu=5 vmcb=13b0bf000 EFER=5d01 (SVME=1) ExitCode_pre=0
+[5] r13-vmrun-fire: cpu=5 about to _svmb_vmm_loop
+[5] virtualization active on 6 cores
+[5] svmb driver loaded (proto v1)
+[5] exit trace: code=72 rip=7ffe42a46716 nrip=7ffe42a46718 cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe42a4675a nrip=7ffe42a4675c cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe42a467f7 nrip=7ffe42a467f9 cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe42a46716 nrip=7ffe42a46718 cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe42a4675a nrip=7ffe42a4675c cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe42a467f7 nrip=7ffe42a467f9 cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe42a1f6a9 nrip=7ffe42a1f6ab cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe41fa3dae nrip=7ffe41fa3db0 cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe41fa3df2 nrip=7ffe41fa3df4 cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe41fa3e8f nrip=7ffe41fa3e91 cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe41fa3dae nrip=7ffe41fa3db0 cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe41fa3df2 nrip=7ffe41fa3df4 cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe41fa3e8f nrip=7ffe41fa3e91 cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe427fe173 nrip=7ffe427fe175 cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe427fe257 nrip=7ffe427fe259 cpl=0 svme=1 info1=0
+[5] exit trace: code=72 rip=7ffe427fe257 nrip=7ffe427fe259 cpl=0 svme=1 info1=0
+[5] prot: unprotected id=1 gpa=12d174000 (guest+_pt restored)
+[5] prot: death sweep pid=4836 released 1 region(s)

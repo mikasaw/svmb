@@ -1,0 +1,49 @@
+# build outputs
+x64/
+driver/x64/
+app/x64/
+driver/svmb.dir/
+*.obj
+*.pdb
+*.lib
+*.exp
+*.iobj
+*.ipdb
+*.log
+*.tlog/
+*.lastbuildstate
+*.unsuccessfulbuild
+
+# visual studio
+.vs/
+*.user
+*.suo
+*.ncb
+*.opendb
+*.VC.db
+UpgradeLog*.htm
+
+# signed artifacts (created in-tree by build/sign.cmd)
+*.cat
+
+# zcode local session state
+.zcode/
+
+# intermediate object dirs created by per-project OutDir resolution
+driver/obj/
+app/obj/
+
+# driver-test workflow scratch (untracked artifacts from ad-hoc runs)
+tests/test.txt
+
+# ad-hoc build/automation scripts (created during debugging; safe to ignore)
+build/_rebuild_drv.bat
+svmb_disasm.txt
+
+# r87 GitHub prep: local VM credentials + crash dumps never go public
+build/vmenv.bat
+*.dmp
+
+# local test certs and debug screenshots never go public
+*.cer
+tests/*.png

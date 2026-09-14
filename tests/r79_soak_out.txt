@@ -1,0 +1,434 @@
+=== mround 1 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=1 oldProt=00000004
+[*] region trips before: 0
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 0 -> 1)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=2 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 1 kicks: 1
+=== mround 2 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=3 oldProt=00000004
+[*] region trips before: 1
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 1 -> 2)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=4 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=6
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 2 kicks: 2
+=== mround 3 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=5 oldProt=00000004
+[*] region trips before: 2
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 2 -> 3)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=6 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 3 kicks: 3
+=== mround 4 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=7 oldProt=00000004
+[*] region trips before: 3
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 3 -> 4)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=8 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 4 kicks: 4
+=== mround 5 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=9 oldProt=00000004
+[*] region trips before: 4
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 4 -> 5)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=10 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 5 kicks: 5
+=== mround 6 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=11 oldProt=00000004
+[*] region trips before: 5
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 5 -> 6)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=12 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 6 kicks: 6
+=== mround 7 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=13 oldProt=00000004
+[*] region trips before: 6
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 6 -> 7)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=14 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 7 kicks: 7
+=== mround 8 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=15 oldProt=00000004
+[*] region trips before: 7
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 7 -> 8)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=16 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 8 kicks: 8
+=== mround 9 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=17 oldProt=00000004
+[*] region trips before: 8
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 8 -> 9)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=18 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=5
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 9 kicks: 9
+=== mround 10 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=19 oldProt=00000004
+[*] region trips before: 9
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 9 -> 10)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=20 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=10
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 10 kicks: 10
+=== mround 11 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=21 oldProt=00000004
+[*] region trips before: 10
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 10 -> 11)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=22 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=12
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 11 kicks: 11
+=== mround 12 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=23 oldProt=00000004
+[*] region trips before: 11
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 11 -> 12)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=24 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=9
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 12 kicks: 12
+=== mround 13 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=25 oldProt=00000004
+[*] region trips before: 12
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 12 -> 13)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=26 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=9
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 13 kicks: 13
+=== mround 14 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=27 oldProt=00000004
+[*] region trips before: 13
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 13 -> 14)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=28 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=9
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 14 kicks: 14
+=== mround 15 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=29 oldProt=00000004
+[*] region trips before: 14
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 14 -> 15)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=30 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=9
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 15 kicks: 15
+=== mround 16 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=31 oldProt=00000004
+[*] region trips before: 15
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 15 -> 16)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=32 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=10
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 16 kicks: 16
+=== mround 17 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=33 oldProt=00000004
+[*] region trips before: 16
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 16 -> 17)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=34 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=8
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 17 kicks: 17
+=== mround 18 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=35 oldProt=00000004
+[*] region trips before: 17
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 17 -> 18)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=36 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=8
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 18 kicks: 18
+=== mround 19 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=37 oldProt=00000004
+[*] region trips before: 18
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 18 -> 19)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=38 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=8
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 19 kicks: 19
+=== mround 20 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=39 oldProt=00000004
+[*] region trips before: 19
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 19 -> 20)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=40 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=8
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 20 kicks: 20
+=== mround 21 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=41 oldProt=00000004
+[*] region trips before: 20
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 20 -> 21)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=42 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=8
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 21 kicks: 21
+=== mround 22 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=43 oldProt=00000004
+[*] region trips before: 21
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 21 -> 22)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=44 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=8
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 22 kicks: 22
+=== mround 23 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=45 oldProt=00000004
+[*] region trips before: 22
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 22 -> 23)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=46 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=9
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 23 kicks: 23
+=== mround 24 %date% %time% 
+[*] pre-protect write OK val=41
+[+] protected id=47 oldProt=00000004
+[*] region trips before: 23
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 23 -> 24)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=48 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+cr3 seed: monitored=8
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 24 kicks: 24
+=== mixedsoak end %date% %time% 
+protected regions: 0

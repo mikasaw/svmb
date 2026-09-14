@@ -1,0 +1,93 @@
+=== cold 1 === 
+
+SERVICE_NAME: svmb 
+        TYPE               : 1  KERNEL_DRIVER  
+        STATE              : 1  STOPPED 
+        WIN32_EXIT_CODE    : 0  (0x0)
+        SERVICE_EXIT_CODE  : 0  (0x0)
+        CHECKPOINT         : 0x0
+        WAIT_HINT          : 0x0
+
+SERVICE_NAME: svmb 
+        TYPE               : 1  KERNEL_DRIVER  
+        STATE              : 4  RUNNING 
+                                (STOPPABLE, NOT_PAUSABLE, IGNORES_SHUTDOWN)
+        WIN32_EXIT_CODE    : 0  (0x0)
+        SERVICE_EXIT_CODE  : 0  (0x0)
+        CHECKPOINT         : 0x0
+        WAIT_HINT          : 0x0
+        PID                : 0
+        FLAGS              : 
+[*] pre-protect write OK val=41
+[+] protected id=1 oldProt=00000004
+[*] region trips before: 0
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 0 -> 1)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+cr3 seed: monitored=1
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 1 kicks: 1
+=== cold 2 === 
+
+SERVICE_NAME: svmb 
+        TYPE               : 1  KERNEL_DRIVER  
+        STATE              : 1  STOPPED 
+        WIN32_EXIT_CODE    : 0  (0x0)
+        SERVICE_EXIT_CODE  : 0  (0x0)
+        CHECKPOINT         : 0x0
+        WAIT_HINT          : 0x0
+
+SERVICE_NAME: svmb 
+        TYPE               : 1  KERNEL_DRIVER  
+        STATE              : 4  RUNNING 
+                                (STOPPABLE, NOT_PAUSABLE, IGNORES_SHUTDOWN)
+        WIN32_EXIT_CODE    : 0  (0x0)
+        SERVICE_EXIT_CODE  : 0  (0x0)
+        CHECKPOINT         : 0x0
+        WAIT_HINT          : 0x0
+        PID                : 0
+        FLAGS              : 
+[*] pre-protect write OK val=41
+[+] protected id=1 oldProt=00000004
+[*] region trips before: 0
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 0 -> 1)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+cr3 seed: monitored=1
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 1 kicks: 1
+=== cold 3 === 
+
+SERVICE_NAME: svmb 
+        TYPE               : 1  KERNEL_DRIVER  
+        STATE              : 1  STOPPED 
+        WIN32_EXIT_CODE    : 0  (0x0)
+        SERVICE_EXIT_CODE  : 0  (0x0)
+        CHECKPOINT         : 0x0
+        WAIT_HINT          : 0x0
+
+SERVICE_NAME: svmb 
+        TYPE               : 1  KERNEL_DRIVER  
+        STATE              : 4  RUNNING 
+                                (STOPPABLE, NOT_PAUSABLE, IGNORES_SHUTDOWN)
+        WIN32_EXIT_CODE    : 0  (0x0)
+        SERVICE_EXIT_CODE  : 0  (0x0)
+        CHECKPOINT         : 0x0
+        WAIT_HINT          : 0x0
+        PID                : 0
+        FLAGS              : 
+[*] pre-protect write OK val=41
+[+] protected id=1 oldProt=00000004
+[*] region trips before: 0
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 0 -> 1)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+cr3 seed: monitored=1
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 1 kicks: 1

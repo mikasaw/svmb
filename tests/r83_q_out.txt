@@ -1,0 +1,2 @@
+alive 
+        STATE              : 1  STOPPED 

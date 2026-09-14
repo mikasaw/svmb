@@ -1,0 +1,3 @@
+alloc pid=4632 base=2036ec60000
+[+] protected pid=4632 base=2036ec60000 size=1000 id=1 oldProt=00000004
+protected - now dying WITHOUT unprotect

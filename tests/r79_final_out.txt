@@ -1,0 +1,4 @@
+protected regions: 0
+cr3 seed: monitored=8
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 24 kicks: 24

@@ -1,0 +1,5 @@
+[SC] ControlService Ê§°Ü 1062:
+
+·þÎñÉÐÎ´Æô¶¯¡£
+
+        STATE              : 1  STOPPED 

@@ -1,0 +1,6 @@
+=== step1 expect 3 live, ids: 3,4,5
+=== step2 after kill1 (sweep): expect 2, got 2
+[+] unprotected 1 region(s) for id=4
+=== step3 after unprotectid 4: expect 1 (and it must not contain 4), got 1
+=== step4 after kill2+kill3 (sweeps): expect 0, got 0
+[+] multitarget PASS

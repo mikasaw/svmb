@@ -1,0 +1,2 @@
+alive 22:57:18.29 
+        STATE              : 1  STOPPED 
