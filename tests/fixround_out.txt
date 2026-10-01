@@ -1,0 +1,6 @@
+cr3 seed: monitored=6
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 11 kicks: 11
+kill: attempts=0 denylisted=0 dropped=0
+suspend: attempts=0 denylisted=0 dropped=0 active=0
+readvm calls: 3 pages: 3

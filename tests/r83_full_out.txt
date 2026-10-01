@@ -1,0 +1,6 @@
+[+] mod attach ok
+错误: 没有找到进程 "notepad.exe"。
+cr3 watch: notepad.exe armed, monitor only (key=0)
+cr3 seed: monitored=4
+sentinel trips: 23 armed pages: 7 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0

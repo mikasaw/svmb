@@ -1,0 +1,181 @@
+=== storm 1 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=20 oldProt=00000004
+[*] region trips before: 3
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 3 -> 4)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 2 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=21 oldProt=00000004
+[*] region trips before: 4
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 4 -> 5)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 3 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=22 oldProt=00000004
+[*] region trips before: 5
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 5 -> 6)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 4 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=23 oldProt=00000004
+[*] region trips before: 6
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 6 -> 7)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 5 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=24 oldProt=00000004
+[*] region trips before: 7
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 7 -> 8)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 6 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=25 oldProt=00000004
+[*] region trips before: 8
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 8 -> 9)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 7 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=26 oldProt=00000004
+[*] region trips before: 9
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 9 -> 10)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 8 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=27 oldProt=00000004
+[*] region trips before: 10
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 10 -> 11)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 9 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=28 oldProt=00000004
+[*] region trips before: 11
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 11 -> 12)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 10 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=29 oldProt=00000004
+[*] region trips before: 12
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 12 -> 14)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 11 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=31 oldProt=00000004
+[*] region trips before: 14
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 14 -> 15)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 12 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=32 oldProt=00000004
+[*] region trips before: 15
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 15 -> 16)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 13 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=33 oldProt=00000004
+[*] region trips before: 16
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 16 -> 17)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 14 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=34 oldProt=00000004
+[*] region trips before: 17
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 17 -> 18)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 15 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=35 oldProt=00000004
+[*] region trips before: 18
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 18 -> 19)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 16 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=36 oldProt=00000004
+[*] region trips before: 19
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 19 -> 20)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 17 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=37 oldProt=00000004
+[*] region trips before: 20
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 20 -> 21)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 18 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=38 oldProt=00000004
+[*] region trips before: 21
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 21 -> 22)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 19 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=39 oldProt=00000004
+[*] region trips before: 22
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 22 -> 23)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm 20 %time% 
+[*] pre-protect write OK val=41
+[+] protected id=40 oldProt=00000004
+[*] region trips before: 23
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 23 -> 24)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== storm end %date% %time% 

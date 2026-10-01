@@ -1,0 +1,9 @@
+=== regions === 
+protected regions: 1
+=== stats === 
+cr3 seed: monitored=4
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0
+=== log === 
+[1] prot: REGISTER id=2 pid=1244 base=2bcb9000 pages=1 oldProt=00000004 (L1 readonly + L2 deny)
+[1] prot: unprotected id=2 gpa=2bcb9000 (guest+_pt restored)

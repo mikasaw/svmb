@@ -1,0 +1,36 @@
+===DIR=== 
+abprobe.bat
+Amd-V-ReloadDbg.sys
+blocksoak.bat
+cycle_com1.cmd
+cycle_result7.txt
+cycle_startup8.cmd
+deathtest.ps1
+exitprof_sampler.bat
+hash.txt
+hold_r87.ps1
+list32.ps1
+melt_watchdog.bat
+mixedsoak.bat
+multitarget.ps1
+probesoak.bat
+run_regression.cmd
+spawn_and_watch.bat
+spin_launch.bat
+stormprobe.bat
+svmb-test.cer
+svmb.cer
+svmb.pdb
+svmb.sys
+svmbctl.exe
+svmbctl.pdb
+thread_storm_launch.bat
+watchleg.bat
+===ROOT-STORE=== 
+颁发者: CN=svmb-test
+使用者: CN=svmb-test
+===TP-STORE=== 
+颁发者: CN=svmb-test
+使用者: CN=svmb-test
+===BCD=== 
+testsigning             Yes

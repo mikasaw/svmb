@@ -1,0 +1,41 @@
+[*] pre-protect write OK val=41
+[+] protected id=1 oldProt=00000004
+[*] region trips before: 0
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 0 -> 1)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=2 oldProt=00000004
+[*] region trips before: 1
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 1 -> 2)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=3 oldProt=00000004
+[*] region trips before: 2
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 2 -> 3)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=4 oldProt=00000004
+[*] region trips before: 3
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 3 -> 4)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=5 oldProt=00000004
+[*] region trips before: 4
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 4 -> 5)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+=== ab done 

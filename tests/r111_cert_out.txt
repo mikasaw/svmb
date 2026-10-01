@@ -1,0 +1,35 @@
+Root "受信任的根证书颁发机构"
+签名与公钥匹配
+相关证书:
+
+精确匹配:
+元素 2:
+序列号: 2315c8e4f4e56e8f40685f91ce39fcd0
+颁发者: CN=svmb-test
+ NotBefore: 2026/9/4 17:28
+ NotAfter: 2027/9/4 17:48
+使用者: CN=svmb-test
+签名与公钥匹配
+根证书: 使用者与颁发者匹配
+证书哈希(sha1): aa2d6f28902b3dce58ca9e08f5a62a4f8669df1c
+
+证书 "svmb-test" 已经在存储中。
+CertUtil: -addstore 命令成功完成。
+---TP--- 
+TrustedPeople "受信任人"
+签名与公钥匹配
+相关证书:
+
+精确匹配:
+元素 0:
+序列号: 2315c8e4f4e56e8f40685f91ce39fcd0
+颁发者: CN=svmb-test
+ NotBefore: 2026/9/4 17:28
+ NotAfter: 2027/9/4 17:48
+使用者: CN=svmb-test
+签名与公钥匹配
+根证书: 使用者与颁发者匹配
+证书哈希(sha1): aa2d6f28902b3dce58ca9e08f5a62a4f8669df1c
+
+证书 "svmb-test" 已经在存储中。
+CertUtil: -addstore 命令成功完成。

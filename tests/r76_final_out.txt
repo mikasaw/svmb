@@ -1,0 +1,123 @@
+[*] pre-protect write OK val=41
+[+] protected id=2 oldProt=00000004
+[*] region trips before: 1
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 1 -> 2)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=3 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+=== final stats === 
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 2 kicks: 2
+protected regions: 0
+[*] pre-protect write OK val=41
+[+] protected id=4 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+=== final stats === 
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 2 kicks: 2
+protected regions: 0
+[*] pre-protect write OK val=41
+[+] protected id=5 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+=== final stats === 
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 2 kicks: 2
+protected regions: 0
+[*] pre-protect write OK val=41
+[+] protected id=6 oldProt=00000004
+[*] region trips before: 2
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 2 -> 3)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=7 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+=== final stats === 
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 3 kicks: 3
+protected regions: 0
+[*] pre-protect write OK val=41
+[+] protected id=8 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+=== final stats === 
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 3 kicks: 3
+protected regions: 0
+[*] pre-protect write OK val=41
+[+] protected id=9 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+=== final stats === 
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 3 kicks: 3
+protected regions: 0
+[*] pre-protect write OK val=41
+[+] protected id=10 oldProt=00000004
+[*] region trips before: 3
+[+] bypass write LANDED (magic 4c325052323672)
+[+] L2 SENSED the bypass (region trips 3 -> 4)
+[+] L1 STILL BLOCKS direct writes (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] probee2e PASS
+[*] pre-protect write OK val=41
+[+] protected id=11 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+=== final stats === 
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 4 kicks: 4
+protected regions: 0
+[*] pre-protect write OK val=41
+[+] protected id=12 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+=== final stats === 
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 4 kicks: 4
+protected regions: 0
+[*] pre-protect write OK val=41
+[+] protected id=13 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+=== final stats === 
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 4 kicks: 4
+protected regions: 0

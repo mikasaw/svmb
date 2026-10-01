@@ -1,0 +1,60 @@
+[0] exit trace: code=72 rip=7fff9e076ed6 nrip=7fff9e076ed8 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff9e076f1a nrip=7fff9e076f1c cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff9e076fb7 nrip=7fff9e076fb9 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff9e076ed6 nrip=7fff9e076ed8 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff9e076f1a nrip=7fff9e076f1c cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff9e076fb7 nrip=7fff9e076fb9 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff9ba0f5ea nrip=7fff9ba0f5ec cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff9ba0f62e nrip=7fff9ba0f630 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff9ba0f6cb nrip=7fff9ba0f6cd cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff9ba0f5ea nrip=7fff9ba0f5ec cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff9ba0f62e nrip=7fff9ba0f630 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff9ba0f6cb nrip=7fff9ba0f6cd cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff97ebb1f6 nrip=7fff97ebb1f8 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff97ebb23a nrip=7fff97ebb23c cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff97ebb2d7 nrip=7fff97ebb2d9 cpl=0 svme=1 info1=0
+[0] exit trace: code=72 rip=7fff97ebb1f6 nrip=7fff97ebb1f8 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8063777e943 nrip=fffff8063777e945 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8063786d7c5 nrip=fffff8063786d7c7 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8063777e943 nrip=fffff8063777e945 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8063786d7c5 nrip=fffff8063786d7c7 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff806378743e3 nrip=fffff806378743e5 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8063777e943 nrip=fffff8063777e945 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8063786d7c5 nrip=fffff8063786d7c7 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff806378743e3 nrip=fffff806378743e5 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff806378741f5 nrip=fffff806378741f7 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8063777e943 nrip=fffff8063777e945 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8063786d7c5 nrip=fffff8063786d7c7 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8063777e943 nrip=fffff8063777e945 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8063786d7c5 nrip=fffff8063786d7c7 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff806378743e3 nrip=fffff806378743e5 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8063777e943 nrip=fffff8063777e945 cpl=0 svme=1 info1=0
+[2] exit trace: code=72 rip=fffff8063786d7c5 nrip=fffff8063786d7c7 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=fffff8063777e943 nrip=fffff8063777e945 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=fffff8063786d7c5 nrip=fffff8063786d7c7 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=fffff8063777e943 nrip=fffff8063777e945 cpl=0 svme=1 info1=0
+[3] exit trace: code=72 rip=fffff8063786d7c5 nrip=fffff8063786d7c7 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fff9fd93dae nrip=7fff9fd93db0 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fff9fd93df2 nrip=7fff9fd93df4 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fff9fd93e8f nrip=7fff9fd93e91 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fff9fd93dae nrip=7fff9fd93db0 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fff9fd93df2 nrip=7fff9fd93df4 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fff9fd93e8f nrip=7fff9fd93e91 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fffa0060672 nrip=7fffa0060674 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fffa00606b6 nrip=7fffa00606b8 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fffa0060753 nrip=7fffa0060755 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fffa0060672 nrip=7fffa0060674 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fffa00606b6 nrip=7fffa00606b8 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fffa0060753 nrip=7fffa0060755 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fffa120d272 nrip=7fffa120d274 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fffa120d2b6 nrip=7fffa120d2b8 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fffa120d353 nrip=7fffa120d355 cpl=0 svme=1 info1=0
+[4] exit trace: code=72 rip=7fffa120d272 nrip=7fffa120d274 cpl=0 svme=1 info1=0
+[4] cr3 monitor: notepad.exe not seeded yet - arming on create
+[4] cr3 monitor: notepad.exe armed pid=788 cr3=1132f3000
+[4] cr3 monitor: cr3_monitor module not attached - sentinel disabled (svmbctl mod attach cr3_monitor)
+[4] cr3 monitor: target armed without XorKey/WriteMonitor - reads will not be spoofed
+[5] cr3 monitor: armed notepad.exe pid=788 cr3=1132f3000
+[5] cr3 monitor: cr3_monitor module not attached - sentinel disabled (svmbctl mod attach cr3_monitor)
+[5] cr3 monitor: armed notepad.exe pid=5628 cr3=12508e000
+[5] cr3 monitor: cr3_monitor module not attached - sentinel disabled (svmbctl mod attach cr3_monitor)

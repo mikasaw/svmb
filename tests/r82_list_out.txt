@@ -1,0 +1,3 @@
+=== listed regions: 9 (expect 9)
+=== after kill-all: 0 (expect 0)
+[+] list32 PASS

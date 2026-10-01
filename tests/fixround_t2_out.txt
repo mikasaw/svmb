@@ -1,0 +1,108 @@
+=== T2 start 2026-09-30T18:08:50.9113359+08:00 ===
+iter 1 : pid=5716 probe=False regions_after=0
+iter 2 : pid=4976 probe=True regions_after=0
+iter 3 : pid=2864 probe=False regions_after=0
+iter 4 : pid=5348 probe=True regions_after=0
+iter 5 : pid=7912 probe=False regions_after=0
+iter 6 : pid=5672 probe=True regions_after=0
+iter 7 : pid=480 probe=False regions_after=0
+iter 8 : pid=4612 probe=True regions_after=0
+iter 9 : pid=7792 probe=False regions_after=0
+iter 10 : pid=4352 probe=True regions_after=0
+iter 11 : pid=7512 probe=False regions_after=0
+iter 12 : pid=1756 probe=True regions_after=0
+iter 13 : pid=5256 probe=False regions_after=0
+iter 14 : pid=4868 probe=True regions_after=0
+iter 15 : pid=7992 probe=False regions_after=0
+iter 16 : pid=7804 probe=True regions_after=0
+iter 17 : pid=2992 probe=False regions_after=0
+iter 18 : pid=3456 probe=True regions_after=0
+iter 19 : pid=7232 probe=False regions_after=0
+iter 20 : pid=7656 probe=True regions_after=0
+=== final regions ===
+protected regions: 0
+=== final stats ===
+svmbctl - svmb hypervisor control
+  info                 query driver/hypervisor state
+  start                enter virtualization on all cores
+  stop                 leave virtualization
+  cycle <n>            enter/exit n times (stress)
+  storm <n>            n guest->VMM hypercall exits per core
+  mod attach <name>    attach a module
+  mod detach <name>    detach a module
+  mod list             list attached modules
+  serial on|off        COM1 log mirror (crash forensics)
+  demo                 demo_cpuid end-to-end test
+  selftest             run offline self-tests (no start needed)
+  npt add <t> <d>      install NPT hook (hex VAs)
+  npt remove <t>       remove NPT hook
+  npt list             list installed hooks
+  cpuid <leaf-hex>     r92: guest-view CPUID (stealth probe:
+                       leaf 1 ECX[31] + 0x40000000 signature)
+  rdtsc                r92: guest-view raw TSC (TscProbe leg
+                       pairs this with kd rdmsr 0x10)
+  npfprobe <n>         M3 live probe: NPF slide cycle (n calls)
+  npfdump              M3 probe: install+dump patch bytes, no exec
+  nthook [n]           hook real NtCreateFile, n opens/core (def 4)
+  nthookov [n]         same hook with an override callback (deny
+                       cmd.exe, pass notepad.exe)
+  viewprobe            M3 live probe: view-switch publish cycle
+  cr3 stats            process CR3 seed table stats
+  cr3 poison           r71 test hook: corrupt one armed sentinel
+                       watermark (simulates frame reuse)
+  cr3 protect <pid> <base> <size> [kill]
+                       r75: protect a region (L1 guest-MM block
+                       + L2 NPT sensing); kill = r89 plan C
+                       (bypass trip terminates the writer)
+  cr3 unprotect <pid> [base]
+                       remove protection(s)
+  cr3 unprotectid <id>  r78: remove one protection by region id
+  cr3 holdpage <sec> [outfile] [kill|suspend]
+                       r78: protect a page of THIS process and
+                       hold it (kill me = death sweep demo;
+                       kill/suspend = r89/r91 response policy)
+  cr3 regions          list protected regions
+  cr3 blockself        r75 E2E: protect a page of THIS process
+                       and prove the write faults
+  cr3 probee2e [kill|suspend]
+                       r76 E2E: kernel MDL write bypasses the
+                       L1 block, NPT sensing must alert; with
+                       kill/suspend = self-victim response demo
+  cr3 probe <pid> <base-hex> [size]
+                       r89: standalone bypass write into an
+                       existing region (kill-policy trigger)
+  cr3 suspended        r91: list suspended writers (plan C-)
+  cr3 resume <pid|all> r91: release suspended writer(s)
+  cr3 marker           r87: print this process's pid + known-
+                       content marker VA (readvm source)
+  cr3 readvm <pid> <va-hex> <size> [out.bin] [faultin] [guestview]
+                       r87/r88: hypervisor-level read of another
+                       process's memory (page-table walk +
+                       physical reads, invisible to the guest);
+                       faultin = r88 strategy B (attach+touch,
+                       completes not-present pages, has trace);
+                       guestview = r89: read the hook-patched
+                       hidden copy on NPT-hooked pages
+  sysaudit             r99: drain the syscall audit ring
+                       (mod attach sysaudit to arm)
+  behavior             r102: per-caller cross-process syscall
+                       rates + burst alerts (sysaudit armed)
+  crumbs               r107: dump the freeze flight recorder
+  kdump <va-hex> [n]   r101: dump n qwords of kernel VA space
+                       (SSDT table / candidate inspector)
+  cr3 readvm-deadbuf   r96 E2E: RESERVED+NOACCESS out buffer
+                       -> clean refusal (probe leg, no gate)
+  cr3 readvm-self      r87 E2E: driver reads THIS process's
+                       marker through the walk, must MATCH
+  cr3 gve2e            fixround A4 E2E: GUESTVIEW hidden-copy
+                       offset (0 / mid-page / cross-page)
+  cr3 readvm-hole      r87 E2E: read reserved-only VA -> clean
+                       PARTIAL, never a crash
+  cr3 readvme2e        r88 E2E: strategy A vs B on untouched
+                       pages + kernel-va/wrap/flags rejection
+                       + NOACCESS fault-in (SEH path)
+  cr3 watch <exe> [key] watch image (arms now + on create); key = xor spoof key
+  cr3 unwatch          clear watch/spoof config
+  dbg events           drain debugger event ring
+  log                  drain kernel log ring
+=== T2 end 2026-09-30T18:09:16.3676528+08:00 ===

@@ -1,0 +1,168 @@
+=== arm begin 2026/09/12 周六 10:40:28.80 
+[+] mod attach ok
+cr3 watch: notepad.exe armed, monitor only (key=0)
+=== obs 1 10:40:28.96 
+cr3 seed: monitored=14
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 2 10:40:28.96 
+cr3 seed: monitored=16
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 3 10:40:28.96 
+cr3 seed: monitored=12
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 4 10:40:28.96 
+cr3 seed: monitored=17
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 5 10:40:28.96 
+cr3 seed: monitored=18
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 6 10:40:28.96 
+cr3 seed: monitored=17
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 7 10:40:28.96 
+cr3 seed: monitored=16
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 8 10:40:28.96 
+cr3 seed: monitored=21
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 9 10:40:28.96 
+cr3 seed: monitored=19
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 10 10:40:28.96 
+cr3 seed: monitored=19
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 11 10:40:28.96 
+cr3 seed: monitored=20
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 12 10:40:28.96 
+cr3 seed: monitored=18
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 13 10:40:28.96 
+cr3 seed: monitored=18
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 14 10:40:28.96 
+cr3 seed: monitored=18
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 15 10:40:28.96 
+cr3 seed: monitored=20
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 16 10:40:28.96 
+cr3 seed: monitored=18
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 17 10:40:28.96 
+cr3 seed: monitored=18
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 18 10:40:28.96 
+cr3 seed: monitored=17
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 19 10:40:28.96 
+cr3 seed: monitored=19
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 20 10:40:28.96 
+cr3 seed: monitored=28
+sentinel trips: 5 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== leg end 2026/09/12 周六 10:50:35.73 
+=== arm begin 2026/09/12 周六 10:58:30.09 
+[+] mod attach ok
+cr3 watch: notepad.exe armed, monitor only (key=0)
+=== obs 1 10:58:30.24 
+cr3 seed: monitored=20
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 2 10:58:30.24 
+cr3 seed: monitored=21
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 3 10:58:30.24 
+cr3 seed: monitored=20
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 4 10:58:30.24 
+cr3 seed: monitored=19
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 5 10:58:30.24 
+cr3 seed: monitored=19
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 6 10:58:30.24 
+cr3 seed: monitored=19
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 7 10:58:30.24 
+cr3 seed: monitored=19
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 8 10:58:30.24 
+cr3 seed: monitored=19
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 9 10:58:30.24 
+cr3 seed: monitored=19
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 10 10:58:30.24 
+cr3 seed: monitored=19
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 11 10:58:30.24 
+cr3 seed: monitored=19
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 12 10:58:30.24 
+cr3 seed: monitored=35
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 13 10:58:30.24 
+cr3 seed: monitored=29
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 14 10:58:30.24 
+cr3 seed: monitored=28
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 15 10:58:30.24 
+cr3 seed: monitored=29
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 16 10:58:30.24 
+cr3 seed: monitored=27
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 17 10:58:30.24 
+cr3 seed: monitored=27
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 18 10:58:30.24 
+cr3 seed: monitored=25
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 19 10:58:30.24 
+cr3 seed: monitored=24
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== obs 20 10:58:30.24 
+cr3 seed: monitored=24
+sentinel trips: 16 armed pages: 4 diag=00000001read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
+=== leg end 2026/09/12 周六 11:08:36.71 

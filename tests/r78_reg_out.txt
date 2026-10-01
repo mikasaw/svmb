@@ -1,0 +1,14 @@
+[*] pre-protect write OK val=41
+[+] protected id=1 oldProt=00000004
+[*] region trips before: 0
+[!] probe failed (err 50, written=0)
+[*] pre-protect write OK val=41
+[+] protected id=2 oldProt=00000004
+[*] post-protect read OK val=41
+[+] WRITE BLOCKED (exception c0000005)
+[*] post-unprotect write OK val=43
+[+] blockself PASS
+protected regions: 0
+cr3 seed: monitored=3
+sentinel trips: 0 armed pages: 0 diag=00000000read exits: 0
+sentinel reuse: 0 npf heals: 0 region trips: 0 kicks: 0
