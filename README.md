@@ -7,7 +7,10 @@ driver load, and on top of that builds: NPT memory virtualization, NPT-based
 page-permission hooks, a CR3 protection suite (sentinel sensing / per-core
 process-view isolation / read spoofing), X-deny syscall sensing with
 cross-process behavior analytics, per-process memory-block encryption
-(dual-frame split view), and crash forensics tooling.
+(dual-frame split view), crash forensics tooling — and a nested-virtualization
+research line: hosting guest hypervisors (L2) with per-core shadow two-stage
+NPT paging, VMLOAD/VMSAVE/INVLPGA emulation, a virtualization-behavior
+recorder (vlog), and nested interrupt-delivery forensics.
 
 **Status: research / test platform — not production-ready.**
 
@@ -19,7 +22,7 @@ cross-process behavior analytics, per-process memory-block encryption
 
 ## Feature Matrix
 
-| Capability | What it does | Status (VMware vhv test bed) |
+| Capability | What it does | Status (vhv / QEMU TCG beds) |
 |---|---|---|
 | All-core virtualization | Virtualizes 6/6 cores at DriverEntry (`AutoStart=1`); clean single-phase unload | ✅ stable (multi-round 10min+ soaks, 13.3T-exit storms) |
 | NPT identity map | `[0, RamEnd)` as 2M RWX large pages incl. MMIO holes | ✅ stable (bare NPT, hour-scale) |
@@ -33,6 +36,10 @@ cross-process behavior analytics, per-process memory-block encryption
 | Alert response | reversible suspend of offending processes (default **off**, `BehaveResponse`), deny-list, kill-time live-EPROCESS image re-verify (K3) | ✅ E2E (kill=1/suspend=1, 4h dual-policy soak 395 iters) |
 | Memory-block encryption (`crypt`) | dual-frame split view: each block page maps to a private plaintext copy on the target's own NPT view while the ORIGINAL frame stores XOR-keystream ciphertext — the target keeps reading/writing plaintext, every other observer (physical walk, scanners) sees ciphertext; two-phase seal behind an exit-generation gate (target frozen across the transition); key-free decrypt + unload-time restore | ✅ E2E (multi-block cycle + hold + unload-restore with a live target, zero damaged reads; offline suite 347/0) |
 | Crash forensics | breadcrumb flight recorder (lock-free ring, live IOCTL + offline suspended-RAM decode), kdump helper | ✅ (decoded both live and frozen guests) |
+| Nested virtualization (L2 sessions) | external-H registration (`hreg`: EFER dual-view, own virtual HSAVE, CPUID SVM unmasked for the registrant), anti-nesting `ic2.VMRUN` armed by default with clean #BP rejection, full L2 round trip (H builds L2's world: page tables + VMCB with CPUID intercepted; control returns with the reflected exit verified), VMLOAD/VMSAVE emulated for L2 | ✅ stage gauntlet green (s0–s3 + nested suite, QEMU TCG bed) |
+| Shadow two-stage NPT (shadow paging) | per-core shadow NPT sessions over svmb's own NPT translating L2 GPAs, INVLPGA-scoped invalidation contract, permission passthrough, 2M large pages, out-of-window hook-slot materialization, cross-core pool changes self-cored to the acting core; multi-core judge (4 H worlds × 4 cores concurrent round trips) | ✅ end-to-end (r184; mechanism regression 11/11) |
+| vlog — third-party-H behavior recorder | six record classes of what a guest hypervisor actually does (reflected exits with decode, INVLPGA, EFER/SVM MSR writes, ...), lock-free ring, `vlog stats/dump/mask/reset` | ✅ |
+| Nested delivery forensics | six-door delivery-path study + xAPIC MMIO IRR instrument naming the killer interrupt sequence; verdict: a two-part nested-delivery defect in QEMU TCG (exception frame-push corruption + lost deliveries) — the svmb-side design space is exhausted with evidence | 📋 documented (r190–r201) |
 | Module system | debugger / cr3_monitor / sysaudit modules over a function-table API | ✅ |
 | Control tool | `svmbctl`: info/start/stop/storm/cr3 */exitprof/dbg */sysaudit/kdump/crumbs | ✅ |
 
@@ -62,6 +69,12 @@ cross-process behavior analytics, per-process memory-block encryption
   (`npt.h` M4 prerequisite). A U/S=0 base-view read-trap was measured and
   rejected: the kernel's own working-set/compression touches disarm it
   within seconds.
+- **Nested line verified on the QEMU TCG bed** (r139–r201): the TCG nested
+  interrupt-delivery seam is a proven two-part defect in QEMU (exception
+  frame-push corruption + lost deliveries, killer vectors named via an xAPIC
+  IRR instrument) — long hypervisor-in-hypervisor sessions under TCG die
+  through no fault of the L1. See `tests/CRASH_DEBUG_LOG.md` r190–r201 for
+  the full evidence chain.
 - Hardcoded Windows 10 1903 (18362) offsets; IOCTLs have no permission
   model yet; no Microsoft signature (local test cert only).
 - Bare metal (real AMD hardware) is unverified.
@@ -73,9 +86,10 @@ driver/   kernel driver source (core/ mm/ modules/ platform/ hw/)
 app/      svmbctl control tool
 shared/   driver<->ctl protocol headers
 build/    build scripts + the vm_*.bat deploy/forensics fleet + guest helpers
-tests/    CRASH_DEBUG_LOG.md (per-round debug history with causal evidence)
+tests/    CRASH_DEBUG_LOG.md (per-round debug history) + l2test L2 test drivers
 docs/     ARCHITECTURE.md / MODULE_GUIDE.md / design & audit documents
-tools/    offline forensics helpers (e.g. suspended-memory crumb decoder)
+tools/    offline forensics helpers (suspended-memory crumb decoder, QEMU
+          full-memory ELF→DMP64 dump synthesizer, crash signature probe)
 AGENTS.md AI-agent working rules (hard-won operational laws)
 ```
 
@@ -106,6 +120,11 @@ Kernel debugging goes through KDNET + WinDbg. Deployment / trigger /
 forensics always run through the `build\vm_*.bat` scripts (see `AGENTS.md`
 for the hard rules these scripts encode).
 
+A second bed carries the nested-virtualization line (r139+): QEMU with TCG
+(`-accel tcg -cpu max,hypervisor=off`), same Win10 1903 guest, serial
+black-box via `-serial file:`, and QMP for freeze-time full-memory snapshots
+that feed the `tools/` offline dump synthesizer.
+
 ## Registry Knobs (`HKLM\SYSTEM\CurrentControlSet\Services\svmb\Parameters`)
 
 | Name | Default | Meaning |
@@ -117,6 +136,8 @@ for the hard rules these scripts encode).
 | SerialLog | 0 | serial flight recorder (partially unreliable on vhv) |
 | WiggleMode | 2 | 0=off 1=back-to-back kick 2=real wiggle (DPC per-VCPU restore) |
 | ReadVmEnable | 1 (Debug) / 0 (Release) | gate for the hypervisor-level memory read (CR3_READVM) |
+| Cr8Repoll | 0 | 1 = re-poll CR8/TPR at every exit (QEMU bed bring-up aid) |
+| NestedIntrPunt | 0 | nested-session INTR gate (r197): arm ic1 bit0 for OwnIdt sessions + 0x60 self-serve drain; 0 keeps accept behavior bit-identical |
 | BehaveRdThs / WrThs / OpThs | 128 / 32 / 16 | behavior-analytics alert thresholds (per 1s window) |
 | BehaveResponse | 0 | 1 = suspend alerting processes (reversible); kill path stays deny-list-only |
 
@@ -138,6 +159,11 @@ for the hard rules these scripts encode).
      + behavior table
    - `svmbctl crypte2e` — memory-block encryption E2E (enc → operator sees
      ciphertext while the target reads plaintext → dec → restore)
+   - `svmbctl l2test 0` then `l2test 1` — anti-nesting baseline + full L2
+     round trip
+   - `svmbctl hreg` / `hunreg` — external-H registration face
+   - `svmbctl vlog stats` — what the guest hypervisor did (reflected-exit
+     census)
 5. Regression: `build/guest/multitarget.ps1`, `build/guest/blocksoak.bat`.
 
 ## Key Documents
@@ -145,7 +171,9 @@ for the hard rules these scripts encode).
 - `AGENTS.md` — agent working rules: channels, iron laws (each backed by a
   real incident)
 - `tests/CRASH_DEBUG_LOG.md` — per-round debug history from round 11 on
-  (symptom / comparison / fix / decision review / TODO)
+  (symptom / comparison / fix / decision review / TODO); the r139–r201
+  nested-virt campaign rounds document the shadow-paging build-out and the
+  QEMU TCG delivery-defect forensics
 - `docs/ARCHITECTURE.md`, `docs/MODULE_GUIDE.md`
 - `docs/L2_BLOCKING_DESIGN.md` — sensing→blocking escalation design
 - `docs/SECURITY_AUDIT.md` — security audit findings and dispositions
