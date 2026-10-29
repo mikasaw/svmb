@@ -52,6 +52,7 @@ bool HandleVmmcallExit(GuestContext& ctx, void* ud);
 bool HandleCpuidExit(GuestContext& ctx, void* ud); // hypercall leaf part; falls through
 bool HandleMsrExit(GuestContext& ctx, void* ud);   // EFER/VM_CR/HSAVE protection + passthrough
 bool HandleVmrunExit(GuestContext& ctx, void* ud); // anti-nesting
+bool HandleHltExit(GuestContext& ctx, void* ud);   // r140 TCG: emulate hlt (stall+resume)
 
 } // namespace svmb
 

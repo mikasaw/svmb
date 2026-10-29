@@ -43,6 +43,12 @@ class Hypervisor
 public:
     static Hypervisor* Instance() { return gInstance; }
 
+    // r140: true when CheckCpu saw no NRIP-save (QEMU TCG SVM emulation).
+    // Gates the TCG compat shims: exit-path NRip reconstruction, HLT
+    // interception + stall emulation (TCG's halted-vCPU wake path is
+    // unreliable across stop/start re-entries).
+    static bool TcgCompat();
+
     NTSTATUS Start();  // PASSIVE_LEVEL
     NTSTATUS Stop();   // PASSIVE_LEVEL
     bool     IsRunning() const { return Running_; }
@@ -76,6 +82,7 @@ public:
     // r58 A/B knobs (registry TlbMode / GuestAsid), consumed by
     // ConfigureVmcb: tlbMode 0 = flush-all armed, 1 = reference semantics
     static void SetTlbKnobs(ULONG tlbMode, ULONG guestAsid);
+    static void SetCr8Repoll(ULONG enable); // r148: per-exit CR8 re-poll gate
     static ULONG TlbModeKnob();
     static u64 ViewTargetCr3();
     static u64 ViewProcPml4();
@@ -100,6 +107,15 @@ private:
     Hypercall Hypercalls_;
     ModuleManager Modules_;
 };
+
+// r157 death-window probe: a NON-serial evidence channel for the
+// exception-exit freeze (the serial mirror is a lossy ring - probe lines
+// missing there proved nothing in r154/r155). Layout: [0] magic 0x31504644
+// ('DFP1'), [1] last completed step (1=HEE enter 2=post-Push 3=post-log
+// 4=Reinfect enter 5=range-ok 6=InjectEvent enter 7=post-pre-read
+// 8=post-write), [2] ctx.Exit, [3] pre.Data, [4] wrote inj.Data,
+// [5] readback. Post-freeze read via QMP dump-guest-memory + magic scan.
+extern volatile LONG64 g_stepProbe[8];
 
 // exit shim called from asm (svm_entry.asm)
 extern "C" void SvmbVmExitEntry(void* vcpu, GuestRegs* regs);

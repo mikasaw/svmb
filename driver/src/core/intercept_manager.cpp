@@ -299,9 +299,32 @@ void InterceptManager::ApplyToVcpu(VcpuContext* vcpu)
     // the remaining divergent state. Hypervisor.cpp FillGuestState now
     // zeroes limits + DR6/DR7 to match the reference exactly.
     u32 op1 = (1u << 18) | (1u << 28);  // CPUID + RDMSR/WRMSR (reference baseline)
+    // r140: under QEMU TCG also intercept HLT. The TCG halted-vCPU wake
+    // path dies after a stop/start re-entry - a parked core with IF=1,
+    // TPR=0 and a deliverable pending LAPIC interrupt never resumes
+    // (frozen-bench proof), so the clock stops and every
+    // InterruptTime-based timeout loop in the guest hangs. Emulating hlt
+    // (HandleHltExit: bounded stall + resume) keeps every core
+    // VMRUN-cycling; interrupts then ride the live-guest injection path,
+    // which keeps working in every generation. VMware/bare-metal keep the
+    // unmodified baseline.
+    if (Hypervisor::TcgCompat())
+    {
+        op1 |= ic1::HLT;
+        // r176: INVLPGA for the nested-shadow invalidation contract (H's
+        // INVLPGA wipes the composed windows - see NestedInvlpgaExit);
+        // the handler re-issues the native invalidation host-side, so the
+        // driver's own guest-context INVLPGA paths stay transparent.
+        op1 |= ic1::INVLPGA;
+    }
     // ic2 bits per vmcb.h: bit 0 = VMRUN (anti-nesting; must be set, see
     // reference baseline + CRASH_DEBUG_LOG round 10).
-    u32 op2 = ic2::VMRUN;
+    // r182: VMLOAD/VMSAVE intercepted too - a real-H-shaped driver (the
+    // the reference hypervisor pattern) vmloads BEFORE its vmrun and vmsave/vmloads around
+    // every exit; native execution would rewrite the REAL save area
+    // through a VMCB svmb does not own (the r168 hazard), so they go
+    // through the emulation in NestedVmloadExit instead.
+    u32 op2 = ic2::VMRUN | ic2::VMLOAD | ic2::VMSAVE;
     // opcode1 requirements (bit n = exit reason 0x60+n)
     for (u32 i = 0; i < 32; ++i)
         if (req.Opcode1[i])
@@ -328,6 +351,19 @@ void InterceptManager::ApplyToVcpu(VcpuContext* vcpu)
     for (u32 i = 0; i < 32; ++i)
         if (req.Exception[i])
             exc |= 1u << i;
+
+    // r160 TCG fidelity shim: QEMU routes INT3/INTn exception raises to
+    // the SWINT (0x75) instruction-intercept check instead of the
+    // exception bitmap - gen_INT3 emits raise_interrupt with is_int=1
+    // (target/i386/tcg/emit.c.inc gen_INT3 -> translate.c gen_interrupt
+    // -> excp_helper.c raise_interrupt2 takes the SWINT branch), while
+    // real AMD delivers #BP through the bitmap (KVM depends on it). With
+    // only the bitmap armed, two million int3s delivered natively and the
+    // VMM never saw one (r158). Arm the SWINT bit alongside the BP face;
+    // HandleSwintExit translates those exits back into exception
+    // deliveries.
+    if (Hypervisor::TcgCompat() && (exc & (1u << EXC_BP)))
+        op1 |= 1u << 21; // 0x75 - 0x60: SWINT in the opcode1 vector
 
     vcpu->GuestVmcb->Ctrl.InterceptCrRead = crRead;
     vcpu->GuestVmcb->Ctrl.InterceptCrWrite = crWrite;

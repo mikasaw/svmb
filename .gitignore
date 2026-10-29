@@ -50,3 +50,6 @@ tests/*.png
 
 # local build experiment artifacts (maps / perf variants)
 build/logs/
+
+# QEMU TCG bench (local VM assets: screenshots, serial logs, tools)
+qemu/

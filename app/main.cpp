@@ -2681,6 +2681,528 @@ static bool TargetHandshakeFromFile(unsigned long& pidOut,
     return false;
 }
 
+// r165 L2 stage-0: nested-virtualization baseline. This process's IOCTL
+// thread plays "H" (a hypervisor inside svmb's guest): the driver-side
+// probe does CPUID/EFER/HSAVE reads (archiving today's virtualization
+// face) and one __svm_vmrun against a zeroed VMCB skeleton. With ic2.VMRUN
+// armed (anti-nesting) the VMRUN must exit, return as an injected #BP
+// (0x80000003), and be caught by the probe's SEH - clean rejection,
+// guest alive. PASS = exc==80000003; the serial must show the matching
+// "vmrun exit: anti-nesting reject" line (r164 cross-check law).
+// r166 stage 1 (`l2test 1`): the FULL round trip - H builds L2's world
+// (page tables + code + stack + VMCB with CPUID intercepted), VMRUN,
+// control RETURNS (no exception), and H's VMCB must hold the reflected
+// exit: ExitCode==0x72, L2 rip at the cpuid, the L2 Rax marker intact.
+// r177: the external-H registration face. Registers/unregisters the
+// CALLING process's CR3 as an H view (EFER.SVME settable, own virtual
+// HSAVE, CPUID SVM unmasked) - what an out-of-tree H driver's loader
+// calls before handing control to its kernel side.
+// r181: the third-party-H virtualization-behavior recorder face.
+//   vlog stats        - aggregate analysis (kind counts, top reflected
+//                       exits, dropped) - the "what does that hypervisor
+//                       driver DO" reading
+//   vlog dump [n]     - drain and decode up to n raw records
+//   vlog mask <hex>   - kind gate (bit kind-1)
+//   vlog reset        - clear the ring and stats
+static void VlogDecodeExit(unsigned long long e, char* out, size_t n)
+{
+    if (e == 0x400) _snprintf(out, n, "NPF (nested paging fault)");
+    else if (e == 0x78) _snprintf(out, n, "HLT");
+    else if (e == 0x72) _snprintf(out, n, "CPUID");
+    else if (e == 0x70) _snprintf(out, n, "EXCP base");
+    else if (e == 0x60) _snprintf(out, n, "INTR");
+    else if (e == 0x75) _snprintf(out, n, "SWINT/INTn");
+    else if (e == 0x7A) _snprintf(out, n, "INVLPGA");
+    else if (e == 0x81) _snprintf(out, n, "VMMCALL");
+    else if (e >= 0x40 && e <= 0x5F)
+        _snprintf(out, n, "#EXC vector %llu", e - 0x40);
+    else if (e >= 0x80 && e <= 0x8F)
+        _snprintf(out, n, "SVM-instr exit 0x%llx", e);
+    else _snprintf(out, n, "exit 0x%llx", e);
+}
+
+static const char* Ic1BitName(unsigned bit)
+{
+    switch (bit)
+    {
+    case 0: return "INTR";
+    case 4: return "VINTR";
+    case 18: return "CPUID";
+    case 20: return "IRET";
+    case 21: return "INTN";
+    case 24: return "HLT";
+    case 25: return "INVLPG";
+    case 26: return "INVLPGA";
+    case 27: return "IOIO";
+    case 28: return "MSR";
+    case 29: return "TASK_SWITCH";
+    default: return nullptr;
+    }
+}
+
+static void VlogDecodeIntent(unsigned long long ic1, unsigned long long ic2,
+                             unsigned long long exc)
+{
+    printf("  H intercepts ic1=%08llx ic2=%08llx exc=%08llx:", ic1, ic2, exc);
+    for (unsigned b = 0; b < 30; ++b)
+        if ((ic1 >> b) & 1)
+        {
+            const char* nm = Ic1BitName(b);
+            if (nm) printf(" %s", nm);
+            else printf(" ic1.%u", b);
+        }
+    for (unsigned b = 0; b < 6; ++b)
+        if ((ic2 >> b) & 1)
+            printf(" ic2.%u", b);
+    if (exc)
+        printf(" exc-bmp=%08llx (exceptions reflected)", exc);
+    printf("\n");
+}
+
+static int CmdVLog(int argc, wchar_t** argv)
+{
+    SVMB_VLOG_CTL ctl = {};
+    if (argc >= 3 && !_wcsicmp(argv[2], L"reset"))
+        ctl.Op = 3;
+    else if (argc >= 3 && !_wcsicmp(argv[2], L"mask") && argc >= 4)
+    {
+        ctl.Op = 2;
+        ctl.Mask = (unsigned)wcstoul(argv[3], NULL, 16);
+    }
+    else if (argc >= 3 && !_wcsicmp(argv[2], L"dump"))
+    {
+        ctl.Op = 0;
+        if (argc >= 4)
+            ctl.Max = (unsigned)_wtoi(argv[3]);
+    }
+    else
+        ctl.Op = 1; // stats
+    unsigned char buf[4096 + 64] = {};
+    if (!Call(SVMB_IOCTL_VLOG, &ctl, sizeof(ctl), buf, sizeof(buf)))
+    {
+        printf("[!] vlog failed (err %lu)\n", GetLastError());
+        return 1;
+    }
+    SVMB_VLOG_OUT* o = (SVMB_VLOG_OUT*)buf;
+    printf("vlog: count=%u dropped=%u\n", o->Count, o->Dropped);
+    static const char* kinds[6] = { "accept", "reflect", "compose",
+                                    "intent", "h-inject", "h-ctrl" };
+    for (int k = 0; k < 6; ++k)
+        if (o->KindCount[k])
+            printf("  %-9s %llu\n", kinds[k],
+                   (unsigned long long)o->KindCount[k]);
+    printf("  top L2 exits the H handled:\n");
+    for (int i = 0; i < 8; ++i)
+        if (o->TopExits[i][1])
+        {
+            char d[64];
+            VlogDecodeExit(o->TopExits[i][0], d, sizeof(d));
+            printf("    %-34.34s %10llu\n", d,
+                   (unsigned long long)o->TopExits[i][1]);
+        }
+    if (ctl.Op == 0)
+    {
+        SVMB_VLOG_REC* r = (SVMB_VLOG_REC*)(o + 1);
+        for (unsigned i = 0; i < o->Count; ++i)
+        {
+            printf("#%u c%u ", r[i].seq, r[i].cpu);
+            switch (r[i].kind)
+            {
+            case 1:
+                printf("ACCEPT  hvmcb=%llx rip=%llx cr3=%llx np=%llu\n",
+                       r[i].a, r[i].b, r[i].c, r[i].d & 1);
+                break;
+            case 2:
+            {
+                char d[64];
+                VlogDecodeExit(r[i].a, d, sizeof(d));
+                printf("REFLECT %-30.30s info1=%llx rip=%llx\n", d,
+                       r[i].b, r[i].d);
+                break;
+            }
+            case 3:
+                printf("COMPOSE lvl=%llu gpa=%llx -> %llx perms=%llx\n",
+                       r[i].d, r[i].a, r[i].b, r[i].c);
+                break;
+            case 4:
+                VlogDecodeIntent(r[i].a, r[i].b, r[i].c);
+                break;
+            case 5:
+                printf("H-INJECT eventinj=%llx (vec %llu type %llu)\n",
+                       r[i].a, r[i].a & 0xFF, (r[i].a >> 8) & 7);
+                break;
+            case 6:
+                printf("H-CTRL  %s old=%llx new=%llx\n",
+                       r[i].a == 1 ? "nested-NCr3" : "TscOffset",
+                       r[i].b, r[i].c);
+                break;
+            }
+        }
+    }
+    return 0;
+}
+
+static int CmdHView(bool reg, unsigned pid)
+{
+    SVMB_HVIEW_CTL h = {};
+    h.Register = reg ? 1 : 0;
+    h.Pid = pid; // r185: 0 = self; 4 = the System ctx DriverEntry runs in
+    if (!Call(SVMB_IOCTL_HVIEW, &h, sizeof(h), &h, sizeof(h)))
+    {
+        printf("[!] hview %s failed (err %lu)\n", reg ? "reg" : "unreg",
+               GetLastError());
+        return 1;
+    }
+    printf("[+] hview %s ok (cr3 context %s, pid=%u)\n",
+           reg ? "reg" : "unreg", reg ? "is H" : "back to stealth", pid);
+    return 0;
+}
+
+static int CmdL2Test(unsigned stage)
+{
+    SVMB_NPT_PROBE p = {};
+    p.Stage = stage == 7 ? 25 : stage == 6 ? 24 : stage == 5 ? 23
+                       : stage == 3 ? 21
+                       : stage == 2 ? 20 : (stage == 1 ? 19 : 18);
+    if (stage >= 13 && stage <= 15)
+    {
+        // r176 shadow v1 judges: s13 = INVLPGA invalidation (remap+flush
+        // -> fresh compose), s14 = perms (H-NX fetch NPF reflects, fix-up
+        // completes), s15 = 2MB large-page compose (offset-mapped single
+        // large entry)
+        p.Stage = stage == 13 ? 27 : stage == 14 ? 28 : 29;
+    }
+    if (stage == 16)
+        p.Stage = 30; // r179: 4 concurrent H worlds on 4 cores
+    if (stage == 17)
+        p.Stage = 31;
+    if (stage == 18)
+    {
+        p.Stage = 32; // r183: full-RAM hook-slot materialization
+        p.Iterations = 0x1000; // bit12 = enable the (gated) hook scan
+    }
+    if (stage >= 8 && stage <= 12)
+    {
+        // r175: s8 = kernel-softint punt self-test (Stage 26), s9 = the
+        // same with the punt BYPASSED (Iterations bit31) - the r174 killer
+        // replay; the bench dying during s9 is the expected outcome.
+        // s10/11/12 = the r175-b vehicle-toxicity bisect: fence-only /
+        // __debugbreak / indirect-call controls.
+        p.Stage = 26;
+        if (stage == 9)
+            p.Iterations = 0x80000000u | 8;
+        else if (stage == 10)
+            p.Iterations = 1;
+        else if (stage == 11)
+            p.Iterations = 4;
+        else if (stage == 12)
+            p.Iterations = 8;
+    }
+    if (!Call(SVMB_IOCTL_NPT_PROBE, &p, sizeof(p), &p, sizeof(p)))
+    {
+        printf("[!] NPT_PROBE s%lu failed (err %lu)\n",
+               (unsigned long)p.Stage, GetLastError());
+        return 1;
+    }
+    unsigned int exc32 = (unsigned int)p.Cr3Value;
+    if (stage == 18)
+    {
+        unsigned long long r1 = (unsigned long long)p.HookHits;
+        unsigned long long r2 = (unsigned long long)p.PagePa;
+        unsigned long long se = (unsigned long long)p.HiddenPa;
+        printf("l2test s18: r1=%llx r2=%llx legs=%llu slot=%llu inWin=%u\n",
+               r1, r2, se & 0xFFFFFFFFull, se >> 32,
+               (unsigned)p.OvDeniedOk);
+        if (r1 == 0xAAAA2222AAAA2222ull && r2 == 0xBBBB3333BBBB3333ull &&
+            (se & 0xFFFFFFFFull) == 2)
+        {
+            printf("[+] L2 s18 PASS (full-RAM hook: out-of-window slot "
+                   "materialized + INVLPGA rescan served the remap)\n");
+            return 0;
+        }
+        printf("[!] L2 s18 FAIL\n");
+        return 1;
+    }
+    if (stage == 17)
+    {
+        printf("l2test s17: exc=%08x legs=%u vl/vs ok exit=%llx mark=%llx "
+               "cs=%u\n",
+               (unsigned)p.Cr3Value, (unsigned)p.OvDeniedOk,
+               (unsigned long long)p.HiddenPa,
+               (unsigned long long)p.PagePa, (unsigned)p.OvOtherOk);
+        if (p.Cr3Value == 0 && p.OvDeniedOk == 1 && p.HiddenPa == 0x78 &&
+            p.PagePa == 0xFFFFFFFFC0DE600Dull && p.OvOtherOk == 1)
+        {
+            printf("[+] L2 s17 PASS (reference-hypervisor shape: vmload/vmsave "
+                   "emulation carried the launch + full exit loop)\n");
+            return 0;
+        }
+        printf("[!] L2 s17 FAIL\n");
+        return 1;
+    }
+    if (stage == 16)
+    {
+        printf("l2test s16: okMask=%llx rounds=%llu\n",
+               (unsigned long long)p.HookHits,
+               (unsigned long long)p.OrigHitsAfter);
+        if (p.HookHits == 0xF && p.OrigHitsAfter == 200)
+        {
+            printf("[+] L2 s16 PASS (multi-core shadow: 4 H worlds x 50 "
+                   "concurrent L2 round trips, one GPA -> four frames)\n");
+            return 0;
+        }
+        printf("[!] L2 s16 FAIL\n");
+        return 1;
+    }
+    if (stage == 13)
+    {
+        unsigned long long r1 = (unsigned long long)p.HookHits;
+        unsigned long long r2 = (unsigned long long)p.PagePa;
+        printf("l2test s13: r1=%llx r2=%llx legs=%u\n", r1, r2,
+               (unsigned)p.OvDeniedOk);
+        if (r1 == 0x1122334455667788ull && r2 == 0x8877665544332211ull &&
+            p.OvDeniedOk == 3)
+        {
+            printf("[+] L2 s13 PASS (shadow v1 invalidation: INVLPGA wiped "
+                   "the window, L2 observed H's remap)\n");
+            return 0;
+        }
+        printf("[!] L2 s13 FAIL (stale compose or leg failure)\n");
+        return 1;
+    }
+    if (stage == 14)
+    {
+        unsigned long long dExit = (unsigned long long)p.HiddenPa;
+        unsigned long long dInfo1 = (unsigned long long)p.HookHits;
+        printf("l2test s14: denied=%u exit=%llx info1=%llx mark=%llx "
+               "term=%u\n", (unsigned)p.OvDeniedOk, dExit, dInfo1,
+               (unsigned long long)p.PagePa, (unsigned)p.OvOtherOk);
+        if (p.OvDeniedOk == 1 && dExit == 0x400 && (dInfo1 & 0x10) &&
+            p.PagePa == 0xFFFFFFFFC0DE600Dull && p.OvOtherOk == 1)
+        {
+            printf("[+] L2 s14 PASS (shadow v1 perms: H-NX fetch NPF "
+                   "reflected with exec bit, fix-up completed)\n");
+            return 0;
+        }
+        printf("[!] L2 s14 FAIL\n");
+        return 1;
+    }
+    if (stage == 15)
+    {
+        unsigned long long codeVa = (unsigned long long)p.Cr3Value;
+        printf("l2test s15: exit=%llx rip=%llx mark=%llx codeVa=%llx\n",
+               (unsigned long long)p.HiddenPa,
+               (unsigned long long)p.HookHits,
+               (unsigned long long)p.PagePa, codeVa);
+        if (p.OvDeniedOk == 1 && p.HiddenPa == 0x78 &&
+            p.HookHits == codeVa + 0xC &&  // hlt exit rip = the hlt itself
+            p.PagePa == 0xFFFFFFFFC0DE600Dull) // r169 sign-extension law
+        {
+            printf("[+] L2 s15 PASS (shadow v1 large page: 2MB entry "
+                   "composed via 512-fill, program ran)\n");
+            return 0;
+        }
+        printf("[!] L2 s15 FAIL\n");
+        return 1;
+    }
+    if (stage >= 8 && stage <= 12)
+    {
+        unsigned long long caught = (unsigned long long)p.HookHits;
+        unsigned long long clean = (unsigned long long)p.OrigHitsHooked;
+        printf("l2test s%u: caught=%llu clean=%llu runs=%u%s\n", stage,
+               caught, clean, p.Iterations,
+               stage == 9 ? " (punt BYPASSED - old lethal path)" : "");
+        if (stage == 9)
+        {
+            printf("[!] L2 s9 RETURNED (old path survived a kernel softint - "
+                   "surprise, the r174 killer needed more than the injection "
+                   "alone)\n");
+            return 0;
+        }
+        if (caught + clean == p.Iterations)
+        {
+            printf("[+] L2 s%u PASS (caught=%llu clean=%llu)\n", stage,
+                   caught, clean);
+            return 0;
+        }
+        printf("[!] L2 s%u FAIL (caught=%llu clean=%llu runs=%u)\n", stage,
+               caught, clean, p.Iterations);
+        return 1;
+    }
+    if (stage == 7)
+    {
+        printf("l2test s7: exc=%08x legs=%u exit=%llx rip=%llx mark=%llx "
+               "intr=%u\n",
+               exc32, (unsigned)p.OvDeniedOk,
+               (unsigned long long)p.HiddenPa,
+               (unsigned long long)p.HookHits,
+               (unsigned long long)p.PagePa, (unsigned)p.OvOtherOk);
+        // hlt sits at code+0xE (cpuid 2 + mov 12); 48 C7 /0 sign-extends
+        // imm32 - 0xC0DE600D lands as 0xFFFFFFFFC0DE600D (the r169 law)
+        if (exc32 == 0 && p.OvDeniedOk == 1 && p.HiddenPa == 0x78 &&
+            p.HookHits == 0x50000Eull && p.PagePa == 0xFFFFFFFFC0DE600Dull)
+        {
+            printf("[+] L2 s7 PASS (shadow v0: L2 ran on virtual GPA "
+                   "0x500000 through H's non-identity nested NPT)\n");
+            return 0;
+        }
+        printf("[!] L2 s7 FAIL (exc=%08x exit=%llx rip=%llx mark=%llx)\n",
+               exc32, (unsigned long long)p.HiddenPa,
+               (unsigned long long)p.HookHits,
+               (unsigned long long)p.PagePa);
+        return 1;
+    }
+    if (stage == 6)
+    {
+        printf("l2test s6: pre(efer=%llx hsave=%llx) H(efer=%llx hsave=%llx)"
+               " post(efer=%llx) cpuidH=%u cpuidOther=%u\n",
+               (unsigned long long)p.Cr3Value,
+               (unsigned long long)p.Pml4Pa,
+               (unsigned long long)p.HiddenPa,
+               (unsigned long long)p.HookHits,
+               (unsigned long long)p.PagePa, (unsigned)p.OvDeniedOk,
+               (unsigned)p.OvOtherOk);
+        bool preStealth = ((p.Cr3Value >> 12) & 1) == 0 && p.Pml4Pa == 0;
+        bool hView = ((p.HiddenPa >> 12) & 1) == 1 &&
+                     p.HookHits == 0x12345000ull;
+        bool postStealth = ((p.PagePa >> 12) & 1) == 0 &&
+                           p.OvDeniedOk == 1 && p.OvOtherOk == 0;
+        if (preStealth && hView && postStealth)
+        {
+            printf("[+] L2 s6 PASS (per-H view: SVME settable + own HSAVE + "
+                   "CPUID SVM visible; stealth face restored post-unregister)\n");
+            return 0;
+        }
+        printf("[!] L2 s6 FAIL (pre=%d H=%d post=%d)\n", (int)preStealth,
+               (int)hView, (int)postStealth);
+        return 1;
+    }
+    if (stage == 5)
+    {
+        printf("l2test s5: exc=%08x term=%u exit=%llx mark=%llx "
+               "retries=%llu dt=%uM\n",
+               exc32, (unsigned)p.OvDeniedOk,
+               (unsigned long long)p.HiddenPa,
+               (unsigned long long)p.HookHits,
+               (unsigned long long)p.PagePa, (unsigned)p.OvOtherOk);
+        // 48 C7 /0 stores imm32 SIGN-EXTENDED to 64 bits (REX.W):
+        // 0xD15EA5ED (bit31 set) lands as 0xFFFFFFFFD15EA5ED
+        if (exc32 == 0 && p.OvDeniedOk == 1 && p.HiddenPa == 0 &&
+            p.HookHits == 0xFFFFFFFFD15EA5EDull)
+        {
+            printf("[+] L2 s5 PASS (sustained L2: 16k-iteration loop ran "
+                   "to terminal hlt through %llu interrupt retries)\n",
+                   (unsigned long long)p.PagePa);
+            return 0;
+        }
+        printf("[!] L2 s5 FAIL (exc=%08x term=%u exit=%llx mark=%llx)\n",
+               exc32, (unsigned)p.OvDeniedOk, (unsigned long long)p.HiddenPa,
+               (unsigned long long)p.HookHits);
+        return 1;
+    }
+    if (stage == 3)
+    {
+        printf("l2test s3: exc=%08x legs=%u/3 mm=%llx mark1=%llx mark2=%llx "
+               "inj=%u intr=%u\n",
+               exc32, (unsigned)p.OvDeniedOk,
+               (unsigned long long)p.HiddenPa,
+               (unsigned long long)p.PagePa,
+               (unsigned long long)p.HookHits,
+               (unsigned)p.TargetVa, (unsigned)p.OvOtherOk);
+        // r168 verdict = the TRANSFER contract: H armed EVENTINJ, the
+        // accept transferred it into the real VMCB and cleared H's Valid
+        // bit (hardware-consumed semantics). The in-L2 DELIVERY of the
+        // injected event hits a QEMU-TCG emulation seam (deterministic
+        // #PF at a host-stack-shaped CR2 with a correctly installed L2
+        // RSP; the delivery push context inside helper_vmrun/cpu_loop_exit
+        // is inconsistent for software nesting - archived r168). Real HW
+        // injects at the hardware level; the passthrough IS the contract.
+        if (exc32 == 0 && p.OvDeniedOk >= 2 && p.TargetVa == 0)
+        {
+            printf("[+] L2 s3 PASS (EVENTINJ transfer: armed -> transferred "
+                   "-> consumed; in-L2 delivery = QEMU seam, r168)\n");
+            return 0;
+        }
+        if (exc32 == 0x80000003)
+        {
+            printf("[!] L2 s3 FAIL (rejected - v1 contract unmet, #BP)\n");
+            return 1;
+        }
+        printf("[!] L2 s3 FAIL (exc=%08x legs=%u mm=%llx m1=%llx m2=%llx)\n",
+               exc32, (unsigned)p.OvDeniedOk, (unsigned long long)p.HiddenPa,
+               (unsigned long long)p.PagePa, (unsigned long long)p.HookHits);
+        return 1;
+    }
+    if (stage == 2)
+    {
+        printf("l2test s2: exc=%08x legs=%u/6 mm=%llx pf=%llx mark=%llx "
+               "intr=%u\n",
+               exc32, (unsigned)p.OvDeniedOk,
+               (unsigned long long)p.HiddenPa,
+               (unsigned long long)p.HookHits,
+               (unsigned long long)p.PagePa, (unsigned)p.OvOtherOk);
+        if (exc32 == 0 && p.OvDeniedOk == 6 && p.HiddenPa == 0 &&
+            p.HookHits == 0x300000 && p.PagePa == 0x5A5AF00D)
+        {
+            printf("[+] L2 s2 PASS (gauntlet: cpuid/hlt/rdmsr/#UD/#PF all "
+                   "reflected, full exit record, marker executed in L2)\n");
+            return 0;
+        }
+        if (exc32 == 0x80000003)
+        {
+            printf("[!] L2 s2 FAIL (rejected - v1 contract unmet, #BP)\n");
+            return 1;
+        }
+        printf("[!] L2 s2 FAIL (exc=%08x legs=%u mm=%llx)\n", exc32,
+               (unsigned)p.OvDeniedOk, (unsigned long long)p.HiddenPa);
+        return 1;
+    }
+    if (stage == 1)
+    {
+        printf("l2test s1: exc=%08x hvmcb=%llx exit=%llx L2rip=%llx "
+               "L2rax=%llx\n",
+               exc32, (unsigned long long)p.Pml4Pa,
+               (unsigned long long)p.HiddenPa,
+               (unsigned long long)p.HookHits,
+               (unsigned long long)p.PagePa);
+        if (exc32 == 0 && p.HiddenPa == 0x72 && p.HookHits == 0x100000 &&
+            p.PagePa == 0xA5A51122)
+        {
+            printf("[+] L2 s1 PASS (full round trip: VMRUN -> L2 cpuid -> "
+                   "exit reflected -> H resumed)\n");
+            return 0;
+        }
+        if (exc32 == 0x80000003)
+        {
+            printf("[!] L2 s1 FAIL (rejected - v1 contract unmet, #BP)\n");
+            return 1;
+        }
+        printf("[!] L2 s1 FAIL (exc=%08x exit=%llx)\n", exc32,
+               (unsigned long long)p.HiddenPa);
+        return 1;
+    }
+    printf("l2test s0: exc=%08x vmcb=%llx svme=%u efer=%llx(%u) "
+           "hsave=%llx(%u)\n",
+           exc32,
+           (unsigned long long)p.Pml4Pa, (unsigned)p.OvDeniedOk,
+           (unsigned long long)p.HiddenPa,
+           (unsigned)(p.OvOtherOk & 1u),
+           (unsigned long long)p.HookHits,
+           (unsigned)((p.OvOtherOk >> 1) & 1u));
+    if (exc32 == 0x80000003u)
+    {
+        printf("[+] L2 s0 PASS (anti-nesting rejection clean: VMRUN -> #BP -> SEH)\n");
+        return 0;
+    }
+    if (exc32 == 1)
+    {
+        printf("[!] L2 s0 FAIL (VMRUN EXECUTED - ic2.VMRUN not armed?!)\n");
+        return 1;
+    }
+    printf("[!] L2 s0 FAIL (exc=%08x)\n", exc32);
+    return 1;
+}
+
 // crypte2e            - full verdict: spawn target, baseline readvm,
 //                       enc (readvm sees cipher, target self-checks stay
 //                       plaintext-ok), dec, readvm restored.
@@ -2964,6 +3486,9 @@ static void Usage()
            "  mod attach <name>    attach a module\n"
            "  mod detach <name>    detach a module\n"
            "  mod list             list attached modules\n"
+           "  l2test [0|1|2|3]     r165-168: nested baseline/round trip/gauntlet/injection\n"
+           "  hreg | hunreg        r177: register/unregister this process's\n"
+           "                       CR3 as an H view (external-H face)\n"
            "  serial on|off        COM1 log mirror (crash forensics)\n"
            "  demo                 demo_cpuid end-to-end test\n"
            "  selftest             run offline self-tests (no start needed)\n"
@@ -3216,6 +3741,14 @@ int wmain(int argc, wchar_t** argv)
         rc = CmdDbgConfig(0, 0, 1);
     else if (!_wcsicmp(argv[1], L"dbgtest"))
         rc = CmdDbgTest();
+    else if (!_wcsicmp(argv[1], L"hreg"))
+        rc = CmdHView(true, argc >= 3 ? (unsigned)_wtoi(argv[2]) : 0);
+    else if (!_wcsicmp(argv[1], L"hunreg"))
+        rc = CmdHView(false, argc >= 3 ? (unsigned)_wtoi(argv[2]) : 0);
+    else if (!_wcsicmp(argv[1], L"vlog"))
+        rc = CmdVLog(argc, argv);
+    else if (!_wcsicmp(argv[1], L"l2test"))
+        rc = CmdL2Test(argc >= 3 ? (unsigned)_wtoi(argv[2]) : 0);
     else if (!_wcsicmp(argv[1], L"dbgdrtest"))
         rc = CmdDbgDrTest();
     else if (!_wcsicmp(argv[1], L"serial") && argc >= 3)

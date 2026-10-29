@@ -7097,3 +7097,2735 @@ ovlstat 50 为产线门拒 NPT_HOOK（披露性，软警告容忍）。
 2. 挂起账目必须在"保留记录"的失败路径上同步清标志（付账与记账原子）。
 3. 锁外借用记录内指针（快照拷贝）= 与无锁清扫的 UAF 面；门判定类
    只读检查整体搬进锁内。
+
+## Round 139 (2026-10-16): QEMU TCG 嵌套战役开打——NRIPS 兼容上线；重入死亡法医链闭合
+
+平台切换：宿主 QEMU 11.1（q35, `-accel tcg,thread=multi`, `-cpu max`,
+6 vCPU/4GB，Win10 1903 guest）。TCG 的 SVM 仿真 = 全新一层兼容面。
+
+### 现象
+
+1. **check 关**：TCG 无 NRIP-save（CPUID.8000000A.EDX 位 0=0），旧代码
+   `SvmCheckResult::NoNrips` 直接拒绝虚拟化 → 驱动加载但不 virtualize。
+2. **活锁**：NRIPS 兼容层（exit-code→定长指令表重建 NRip）首版带
+   `NRip==0` 守卫——但 TCG 从不写 NRip 字段，第 2+ 次 exit 时字段里是
+   **我们自己上次写回的陈旧值**，守卫被骗过 → guest 被反复推回旧
+   rip，串口 16 连 `rip=...675a nrip=...6718`（注意 code=72 是**十六进制**
+   0x72=CPUID，不是 MSR）。
+3. **基座全绿**：修掉守卫（无条件重算）后 start/demo(CPUID 拦截端到端)/
+   storm 10000×6 核/`cycle 3` 的 stop+start 三轮全干净，`svmbctl info`
+   6/6 RUNNING，CPUID SVM 位隐藏正常。
+4. **重入死亡**：cycle 的**最后一轮 start 后**的稳态在 10~60 秒内死亡
+   （单轮重入有时也死，3 轮几乎必死）。无 bugcheck、无 dump、无串口
+   遗言；有时演化为硬复位（三重故障级，SeaBIOS 在死后重跑佐证）。
+
+### 法医链（判决性证据全在 qemu/logs + 2GB `-d int` 日志）
+
+- **QEMU monitor/QMP 直读冻结现场**（`-d int` + 无复位的那次冻结）：
+  - 6/6 核同 RIP `nt+0x361e17`（两指令 getter `mov rax,[全局]; mov
+    eax,[rax+0xF0]`，被轮询值=TSC 类计数器在走）= 6 核在 IPI 上下文
+    的时间轮询循环里等一个非时间事件。
+  - **6/6 LAPIC 完全一致：TPR=0xF0、ISR=0xB1(Windows IPI 向量)、
+    IRR=47,209（网络/磁盘中断在排队投递不进去）**——全体核卡死在
+    同一次广播 IPI 的处理中，TPR 高地板挡住一切设备中断 → 缺页线程
+    等盘完成中断=永等 → sshd/串口/一切饿死。
+  - 前期 27,687 次 `check_exception old:0xffffffff new:0xe`——同一个
+    "首次"#PF 高速循环：故障帧 **SS=0000**（svmb L1/VMM 上下文签名）、
+    CR2=池地址、guest PT 走查 PML4[344]=P=0（当前 CR3 视图真缺页）、
+    故障指令 `mov (%r9),%rcx` 池指针链走查（wedge-1 的 kd 符号化定位
+    `nt!CmpPerformCompleteKcbCacheLookup` 注册表 KCB cache 家族）。
+  - VMCB 尸检（QMP 物理读 gen-2 VMCB）：NCr3=161920000 与配置一致、
+    Save.SS=0x18 正常、exit 字段清零——**VMCB 本体健康，毒不在视图
+    指针**。
+  - `-d unimp,guest_errors` 全程零新增——不是"未实现指令"，是语义分歧。
+
+### 与参考的对比
+
+- the reference hypervisor（裸机）：#VMEXIT 天然带 NRIP；无重入场景。
+- VMware vhv（r28c 律）：曾有同族 "IPI hang"——devirt 后 GIF=0 屏蔽
+  一切中断，修法=devirt 路径补 STGI。本次 QEMU 现象同签名（中断全
+  屏蔽 + IPI 卡死）但载体不同（TCG 的 GIF/TPR 状态机在 stop→start
+  重入后分歧）。
+- r28 自陷路径 asm 注释：`{State|ExitTraceLeft<<32}` 指针追逐把数据当
+  地址 #PF——27k #PF 的池悬挂链走查同族。
+
+### 修复尝试
+
+| 尝试 | 结果 |
+|---|---|
+| NRIPS 兼容（定长指令表，`NRip==0` 守卫） | 虚拟化上线但活锁（陈旧 NRip） |
+| 无条件重算 NRip（本轮 commit 候选） | demo/storm/cycle-3 全绿 |
+| 重入稳态延长观察 | 10~60s 内死亡，非确定性窗口 |
+| `-d int` 抓异常级联 | 27k #PF + IPI 卡死现场（本表的证据源） |
+
+### 关键决策回顾
+
+| 当时以为 | 真相 |
+|---|---|
+| "code=72 是 MSR 出口" | %llx 打印=0x72=CPUID；exitprof 全 cpuid 佐证 |
+| "全核 EFER.SVME=0=svmb 熄火" | QEMU `info registers` 在 VMRUN 间显示 L2 guest 的 EFER（guest 本就不设 SVME），读数无判别力 |
+| "死亡=蓝屏" | 三种形态：长冻结（真冻结）/快速硬复位（三重故障）/伪复活（重启后 SSH 恢复但驱动消失）；无 dump 是常态 |
+| "串口死=串口通道坏" | guest 全核 IF=0+TPR=0xF0，什么都不打印是果不是因 |
+| "kd break 不进=内核死" | 全核关中断时 KDNET 根本送不进 break（与 r60 律互补：熔解期轻命令，全静默期直接换 monitor/QMP） |
+
+### QEMU 工具律（本轮新增，进技能前先记这里）
+
+1. **QEMU monitor `info registers` 读数歧义**：svmb 活跃时显示 L2 guest
+   态；判 svmb 死活用 com1.log 的 r13/r18 信标 + exit trace，不用 EFER。
+2. **`-action reboot=pause/none` 在 QEMU 11.1 均被拒**（reboot 只收
+   reset/shutdown）；想冻结复位现场用 `-d cpu_reset`（记原因）+
+   `-d int`（记异常级联）。
+3. **`-d int` = 350MB/min**——只用于定向复现，事后即撤。
+4. **`dump-guest-memory -w` 需要 guest vmcoreinfo 设备**（未装，报
+   "no vmcoreinfo note"）；物理尸检走 QMP `xp` + 手工走表（本轮全链
+   用它完成）。
+5. **mon.ps1 逐连接独立 HMP 实例**——`cpu N` 必须与读命令同一连接
+   发送（bash `$'a\nb'` 塞换行）；QMP `human-monitor-command` 是更稳
+   的通道（monitor 被日志压死时 QMP 仍活）。
+6. **kd `~` 系命令被 windbg-mcp 包装层吃掉**（Syntax/Extra character
+   error）——全核栈改走 monitor/QMP + `-d int` 组合。
+
+### TODO
+
+1. 判决实验跑中：纯 gen-1 长 10min vs gen-2——毒在重入状态机还是
+   稳态（结果见下轮开头）。
+2. 若毒在重入：审计 Stop()/EnterCore() 的 per-core 状态（GIF/TPR/
+   hsave/leaked vCPU 指针），重点 asm 自陷路径对 gen-1 池内存的引用。
+3. QEMU 战役的 guest 侧脚本化（deploy.bat 已有；补 start/storm/cycle
+   一键 + 自动判活）。
+
+### r139 补：两个判决实验（当晚完成）
+
+1. **纯 gen-1 长 10 分钟：存活**（18,008 出口稳定增长，SSH 每分钟
+   响应）——毒不在稳态。
+2. **stop → 裸 30s → start（拉开间隔）：t+90s 内死亡**——排除背靠背
+   IPI 竞态，**任何第二代 Start 本身带毒**。
+
+修复目标收敛：Stop() 释放了什么 / 残留了什么，使 2nd Start() 的世界
+与 1st 有致命差异（二代 VMM 池悬挂 #PF = 有指针跨代存活）。审计面：
+Start()/Stop() 的分配-释放对称性 + asm enter 二次调用的 per-core 状态
+（HSAVE_PA 重写、EFER 舞步、r28 in-place resume 留下的段/DR 残留——
+r18 家族"segment limits + DR6/DR7"同款）。
+
+教训补录：**冻结现场取证完再杀 QEMU**——本轮 2GB `-d int` 级联日志
+随 relaunch 被删（结论已入档，原始字节丢了）；且冻结机的
+PsLoadedModuleList 没走 QMP 拿（fault IP 的模块归属存疑：nt 边界推算
+两难，下次冻结时先走 KPCR→PsLoadedModuleList）。
+
+## Round 140 (2026-10-16 晚): 重入死亡三连深挖——NMI 强制蓝屏取 dump 新武器；HLT 仿真落地（必要未充分）
+
+### 现象
+
+r139 遗留：stop→start 重入后 10~60s guest 死。本轮带着新武器继续。
+
+### 新武器：NMI → kernel dump（一次成型，进技能）
+
+QMP `nmi` 把 0x80 'TDO' NMI 打进楔死机（NMI 绕过 TPR/IF=0）→
+Windows 强制蓝屏 → **拿到楔死现场的内存快照**。guest 侧先备好
+`CrashDumpEnabled=2`（kernel dump，~370-400MB；minidump 只有故障线程
+栈，不够用）。拉回宿主 → windbg-mcp `open_cdb_dump` 离线分析（合规
+通道）。r139 "无 dump 的死亡"从此可尸检。
+
+### dump #1 判读（svmb 确定加载，楔死现场）
+
+- **CPU1 卡 `parport!CheckPort`**（IEEE 1284 协商轮询 LPT——QEMU 没配
+  并口，状态口恒 0xFF）；退出条件 = `[r12]`（KUSD.InterruptTime 类时
+  间源）× 超时——**时间源冻结则永不退出**。它占着 PnP 树锁
+  （`!ready` 里 `PpDevNodeLockTree` 等待者即受害者）→ 注册表/PnP 级联。
+- 其余核 idle/正常。**根因层：时钟中断不再被交付 → InterruptTime 冻
+  → 依赖超时的内核轮询死循环**。
+- r139 冻结机 15s 快照补强：5 核 HLT 且 CPU0 的 IRR 压着可投递向量
+  209 唤不醒（IF=1、TPR=0 都正常）→ **TCG halted-vCPU 唤醒路径在重
+  入后断裂**。
+
+### 修复尝试：HLT 拦截 + 停顿仿真
+
+- `Hypervisor::TcgCompat()` 公开 no-NRIPS 标志；TCG 模式下 intercept
+  基线 op1 加 `ic1::HLT`（→0x11040000，串口已确认挂上）；
+  `HandleHltExit` = 100µs KeStall + 推进（guest 不再真睡，中断走运行
+  态注入路径）。VMware/裸机基线不变。
+- **判决：必要但未充分**——挂上后重入仍死（~10s，甚至更快），且死亡
+  时串口常已假死（ctl 报 HV_CONTROL ok 但 stop 打印一条没有→串口
+  写死在 gen-1-active 与 cycle 之间）。
+- gen-1 回归：start/demo/60s 稳态全绿（HLT 位无害）。
+
+### 关键决策回顾
+
+| 当时以为 | 真相 |
+|---|---|
+| "27k #PF = VMM 上下文（SS=0）踩泄漏池" | L1/L2 两套 KASLR 基址在 `-d int` 混排；27k 是 **L2 guest 自己的缺页循环**（等页盘完成中断=永等） |
+| "根因是跨代池指针" | dump 实锤第一凶手=**时钟/中断交付断**（parport 只是持锁的受害者代表） |
+| "串口死=通道坏/系统死" | 串口写在 cycle 中途死且 ctl 还能报 ok——**先于系统死**；SerialPut 有界(10000×LSR 轮询)但若 THRE 永不置位，每行≈60字符×10000次端口读=秒级熔解，出口路径被拖垮（假死） |
+| "第二个 kernel dump 继续分析" | `lm m svmb` 空——**SSH exec 超时死于跑命令前**，楔死时驱动没加载，dump 污染作废。教训：NMI 前 must 验证 svmbctl info 可用（驱动在） |
+
+### TODO（下轮）
+
+1. **验证串口熔解论**：SerialPut 的 LSR 轮询加计数上报（一次行写花
+   了多少次轮询）；或 TCG 下直接砍掉 LSR 等待（file 后端无压力）。
+   若出口路径被串口拖死成立，串口节流/砍等待可能直接消掉"假死"层。
+2. 判别剩余死亡：HLT 仿真后的死法（10s 快死）与之前（25-90s）是否
+   同根——用 NMI dump（先验驱动在）+ exitprof 时间序列（KDNET 或
+   低频轮询）。
+3. 考虑 TCG 下加 `ic1::PAUSE` 拦截做自旋让出（parport 类轮询的
+   VMM 侧可观测化）。
+4. KeStallExecutionProcessor(100) 的 HLT 仿真若真被走到，会在串口
+   留 hlt-emulate 打印——本轮预算被 CPUID 吃满+串口中途死，**尚未
+   证明 HLT 出口发生过**；下轮把 budget 与 hlt 打印解耦（独立计数器
+   经 exitprof 读出）。
+
+### 产出
+
+- 代码：`Hypervisor::TcgCompat()`、ic1::HLT 条件挂载、`HandleHltExit`
+  （含一次性打印）、ExitTraceLeft 16→200（QEMU 串口床）；gen-1 无回
+  归、重入死亡未解。
+- 工具：NMI→kernel-dump SOP（CrashDumpEnabled=2 + QMP nmi + 
+  open_cdb_dump），已入 qemu-vm-kernel-debug 技能。
+- dump 存档：qemu/dumps/r140_kernel.dmp（#1 可用）、r140_kernel2.dmp
+  （污染，保留作教训样本）。
+
+## Round 141 (2026-10-16 深夜): 死亡免疫标记通道落地——cycle 完整性洗清 + 全核遗像定谳
+
+### 新工具：TraceMarker 磁盘标记（死亡免疫证据通道）
+
+串口在死亡窗口不可信（QEMU 侧丢字，盲写修复也没救回 gen-2 段），
+SSH/HTTP 随 guest 死。新通道：驱动 PASSIVE 路径 `TraceMarker/Fmt`
+→ 追加写 `C:\svmb_trace.txt`（FILE_WRITE_THROUGH，重启/冻结后可读）。
+撒点：HV_CONTROL 分发、Start/Stop 进出、start-active 附带**每核 VMCB
+物理地址**（vmcb-pas 行——冻结时 QMP `xp` 直读遗像的钥匙）。
+
+### 判决一：cycle 完整性洗清（标记文件时间线）
+
+```
+hvctl-cycle → stop-enter → stop-done (20~91ms) → start-enter
+→ start-active (83ms~5.6s) → [死亡发生于 gen-2 稳态头几秒]
+```
+**stop/start 机器全好**，六核干净进出；串口"stop 打印缺失"=QEMU 侧
+UART 丢字（盲写后依旧，丢失点在更深处），不是事件没发生。
+
+### 判决二：全核遗像（标记文件给 VMCB PA → QMP xp 冻结 VMCB）
+
+- 6/6 VMCB：op1=11040000 ✓、MSRPM 全局一致 ✓、**ExitCode=0x72 全是
+  陈旧值**（该出口早已服务完，此后再无出口）。
+- 6/6 CPU 同 RIP=guest 时间轮询循环（两指令 getter 家族），**RFL=0x46
+  = IF=0**：全核关中断空转，等一个只有中断处理器才会更新的值。
+- 遗像与 r139/r140 完全同族：**中断交付停摆 → 时间值冻结 → 全核陷进
+  IF=0 轮询 → 永久冻结**。HLT 拦截后核不再 hlt（改为轮询卡死），
+  死法同根。
+
+### 因果链（最终版）
+
+gen-2 稳态头几秒 → **TCG 中断注入停摆**（触发点未定位：疑中断阴影
+int_shadow 跨重入残留 / 事件注入状态机分歧，需 QEMU 源码级验证
+svm_helper.c 的 int_shadow 与 EVENT_INJ 语义）→ 时钟/设备中断不再
+投递 → KSD 时间值冻结 → 所有依赖超时/事件的内核循环死转。
+
+### 修复尝试汇总（本轮）
+
+| 尝试 | 结果 |
+|---|---|
+| SerialPut TCG 盲写（去 LSR 等待） | 串口熔解论证伪（写不再等，但 QEMU 侧仍丢段）；保留（file 后端本就该盲写） |
+| TraceMarker 磁盘通道 | **落地成功**：cycle 洗清 + VMCB PA 交付 |
+| VMCB 遗像直读 | **落地成功**：全核定格同一循环 |
+
+### TODO（下轮）
+
+1. **QEMU 源码级验证**：取 QEMU 11.1 `target/i386/tcg/svm_helper.c`
+   （或在线读），核对 (a) VMEXIT/VMRUN 的 int_shadow 保存恢复、
+   (b) 外部中断注入到运行中 SVM guest 的条件（hflags2/HF_GIF/
+   int_shadow 门控）、(c) EVENT_INJ 的跨代残留可能。
+2. 候选修复：VMM 每次出口**清 VMCB 的 int_shadow 位**（CleanBits=0
+   律下写）——若阴影泄漏是触发点，一行修复。
+3. 候选修复 B：VMM 侧中断窗口强制（每 N 个出口检查 LAPIC PPR/IRR，
+   可投递则 EVENT_INJ 注入或至少保证 VMRUN 后 delivery 机会）。
+4. 标记通道扩展：HandleHltExit 计数经 exitprof 读出（验证 HLT 出口
+   是否真发生）。
+
+### 律（新增）
+
+1. **QMP `dump-guest-memory -p <file> <begin> <length>` 会把 QEMU 主循
+   环挂死**（0 字节不前进、monitor/QMP 全哑、VM 停在 STOP）——别用；
+   物理取证用 `xp` 直读（有已知 PA 时）。
+2. 串口在 gen-2 死亡窗口的丢字发生在 QEMU 侧（guest 盲写也丢）——
+   **死亡窗口的真相只在磁盘标记 + QMP 冻结直读里**。
+3. EnterCore 跑在 IPI 级——文件 IO 类标记必须从 PASSIVE 编排线程收割
+   （Start() 的 RunOnEachCore 返回后）。
+
+## Round 142 (2026-10-16 晚): QEMU 源码对齐 + 冻结现场深度尸检——停车点=HPET MMIO 读，第一推动力仍未闭合
+
+### 本轮背景
+
+r141 收官时定下 r142 三问：(a) int_shadow 跨 VMEXIT/VMRUN 语义、
+(b) 外部中断注入门控、(c) EVENT_INJ 跨代残留。本地网络对
+raw.githubusercontent 间歇 SSL 失败（curl 全灭），改用
+`git clone --depth 1 --filter=blob:none --sparse` 成功拉取 QEMU master
+（=11.1+ 数日后，target/i386/tcg/system/ 子目录布局）到
+`qemu/qemu_git/`。
+
+### QEMU 源码结论（全部带行号可复查）
+
+1. **GIF**：`helper_vmrun` 尾部无条件 `hflags2 |= HF2_GIF_MASK`；
+   `do_vmexit` 尾部 `hflags2 &= ~(HF2_GIF_MASK|HF2_VGIF_MASK)`。
+   svmb 自退出路径（svm_entry.asm:460/507）已有 STGI，
+   且 `virtual_gif_enabled()` 在非 guest 态恒 false → STGI 正确落到
+   HF2_GIF。**GIF 遗留论死**（r140 冻结时 QMP nmi 能触发 0x80 =
+   NMI 交付成功 = GIF=1，双证据）。
+2. **int_shadow**：do_vmexit 写 `control.int_state`（偏移 0x68），
+   helper_vmrun 读回——对称，无泄漏。冻结 VMCB int_state 位未置。
+3. **投递门控**（cpu.c `x86_cpu_pending_interrupt`）：HARD/NMI/SMI 全部
+   包在 `hflags2 & HF2_GIF_MASK` 里；非 VINTR 模式 HARD 还需
+   `x86_cpu_interrupts_enabled`（IF && !shadow）。HARD 投递前先过
+   `cpu_svm_check_intercept_param(SVM_EXIT_INTR)`（INTR 拦截位为 0 ✓）。
+4. **EVENT_INJ**：do_vmexit 搬 event_inj→exit_int_info 并清零；无跨代
+   残留路径。VMCB 布局与 KVM/QEMU PACKED 结构逐字段对齐
+   （int_ctl@0x60、int_state@0x68、exit_code@0x70、nested_ctl@0x90、
+   event_inj@0xA8、nested_cr3@0xB0）。
+5. **r141 三问全部闭合，但答案都不是死因**——死因要重新找。
+
+### r141 冻结现场尸检（本轮战果，现场后因误杀 cdb 丢失）
+
+r141 留下的冻结实例还活着，直接深挖（QMP + VMCB 直读 + windbg-mcp
+离线符号化 + r140_kernel.dmp 同二进制 RVA 反查）：
+
+- **冻结画面 = 登录"欢迎"转圈**（VGA screendump）。r141 全部"gen-2
+  死亡"都发生在登录会话建立期（SSH 驱动测试，guest 从未到桌面）。
+- **6 核 RIP 全部 = fffff8054f6bae17 = hal!HalpHpetQueryCounter+0x7**
+  （`mov eax,[rax+0xF0]`，HPET 主计数器 MMIO 读；字节级比对 r140 dump
+  同 RVA 函数体 + 后随 HalpHpetStop 开头 8 字节全等，三重确认；
+  r142 hal 基址 0x4f6b6000，nt@0x4ec00000）。
+- RFL=0x46（IF=0）×6，TPR=0xF0（IRQL 15）×6，ISR 空，IRR={0xB1 IPI,
+  0xD1 时钟}积压 ×6，EFER.SVME=1（gen-2 运行中）。
+- 栈上有 `nt!KiCheckStall+0x32`、`hal!EmonQueryInformation` 邻域、
+  QPC 频率 0x5F5E100（1e8=100MHz HPET）→ **看门狗（KiCheckStall，
+  HIGH_LEVEL）自己陷进 HPET 读轮询** = TPR 0xF0 的来源。
+- **6 个 vCPU 宿主线程全部 Running、各 ~2900s CPU**——在 TCG 里满速
+  自旋，不是 QEMU 内部阻塞（BQL 死锁论死）。正常 svmb 空闲也这样
+  （HLT 拦截+100µs stall 使空闲核永不真停机），无法用 CPU 时间区分。
+- **QEMU 侧 HPET 64 位计数器健康在走**（两次读差 5s≈5e8 tick，
+  100MHz 精确；GCAP=0x8086a201，GEN_CONF=0x3 enabled）。
+- **exit_code 遗留 0x72×6 + 串口尾部是健康的 CPUID 出口流**：
+  冻结后零出口——核不是在出口风暴里，是**钉死在一条指令上**。
+- **两次 `info registers`（间隔数分钟）RIP 不变**——不是慢，是钉死。
+- **异常：6 个 VMCB 的 nested_cr3=0x1589f3000（一致），但该物理页
+  内容是内核池数据（155 个杂项 qword、fffff805/ffffb30c 模式）而非
+  页表**。而 NPT 填充（npt.cpp r116 起 [0,1TB) 2M RWX）必然使
+  pml4[0]≠0。矛盾未闭合：要么这些 VMCB 不是活态，要么 NPT 根页在
+  代际边界被换成了池。**这是下轮复现要带探针回答的问题。**
+
+### 死因当前画像（候选序）
+
+1. **HPET MMIO 读在 gen-2 嵌套翻译/分发路径上永不退休**：核在 QEMU
+   内部对这一次访存的翻译/IO 分发里满速空转，不 fault（无 NPF 出口）、
+   不前进（RIP 钉死）、不阻塞（线程 Running）。全部六核先后汇入
+   （KiCheckStall 看门狗 + 登录期 QPC 轮询风暴是汇入通道）。
+2. NPT 根页被换（nested_cr3 指向池数据）作为 (1) 的机制候选。
+3. 登录会话是放大器不是根因（gen-1 同样场景绿）。
+
+### 现场丢失事故（教训）
+
+- 取证后期发现 4 个陈旧 cdb（17:11-17:59 启动）+1 个新 cdb，
+  `Stop-Process -Force` 全杀 → **附着中的 cdb 把 QEMU(22380) 带死**，
+  冻结现场丢失（尸检数据已在本节保全）。
+- **新律：杀任何调试器进程前必须先确认其附着目标；强杀附着态调试器
+  视同杀目标。**
+
+### TODO（下轮继续 r142）
+
+1. Start() 加 NPT 状态 marker（NptPa、pml4[0] 值、pml4[0] 指向的
+   pdpt[0] 值）——一次复现即可回答 nested_cr3 遗像之谜。
+2. 复现序列改为**先等到桌面再测**（剥离登录风暴混淆变量）。
+3. 冻结时宿主栈取证改为**一次性 cdb**（`cdb -p PID -c "~*k; qd"
+   -logo out.txt`，无陈旧实例、不先杀任何东西）。
+4. 若 (1) 证实 NPT 根被换：审 Stop()/Start() 的 NPT 生命周期
+   （谁建、谁引用、谁可能释放）。
+
+### r142 终章（深夜追加）：三层洋葱——每层都真、每层都不是全部
+
+干净复现序列（桌面就绪后 SSH 驱动，无 NPT 探针，Active()=NULL）
+逐步剥出的三层，每层一个修复 + 一个可观测的行为变化：
+
+| 层 | 证据 | 修复 | 修复后行为 |
+|---|---|---|---|
+| L1 QEMU HARD 位失同步 | 冻结时 IRR 0xD1 可投递 pending + TPR 0x20 + IF=1 + 原生态不投递；**QMP nmi 扰动后整机自愈**（apic_update_irq 重跑） | exit 每 1024 次 `__writecr8(__readcr8())`（QEMU 路径 cr8→apic_set_tpr→apic_update_irq 无等值短路） | 散乱等待死相消失 |
+| L2 HPET MMIO 读停车 | r141 冻结=hal!HalpHpetQueryCounter+0x7 ×6（RVA 0x4e17 三重字节确认）；**hpet=off 的 boot 也能原生冻在同一个 RIP**（实验床自身失败模式） | `start_svmb.bat: -machine q35,hpet=off` | HPET 类死相消失 |
+| L3 调试器等待冻结 | 全核 nt!KeBugCheck2+0xc93 冻结环 + **KiBugCheckData 全零**（≠bugcheck）+ KdDebuggerEnabled=1（r139 KDNET 遗产）且无调试器应答 | guest `bcdedit /debug off` | 永久死亡→消失 |
+
+**修复后的新稳态（两次复现一致）：**
+cycle → 90 秒瞬态假死（SSH 断、核去虚拟化）→ **自愈**（系统恢复运行、6 分钟+稳定存活）→
+svmb 服务变 STOPPED（无 SCM 停止事件、无 marker——无声卸载，机制待查）。
+cycle 3 因设备消失而无法继续（err 2）。
+
+### 本轮方法论收获（新律）
+
+1. **QMP 页表走读 + r140 dump 同二进制 RVA 反查 = 无符号冻结现场的完整符号化**
+   （CR3 walk → MZ 扫描 → 字节指纹 `s` 命令 → `ln`）。
+2. **一次性 cdb 宿主栈**：`cdb -p <pid> -c "~*k; qd" -logo out.txt < NUL`——附着即取即分离；
+   两次采样对比区分"死锁持锁者"vs"BQL 轮转活锁"。
+3. **杀调试器前必查附着目标**（强杀附着态 cdb = 杀目标，本轮赔掉一个冻结现场）。
+4. **调试使能的 guest + 无调试器 = 冻结炸弹**：任何调试事件（断言/DbgBreakPoint）→
+   KdEnterDebugger → 全核冻结环等待应答 → 永久停车，且 KiBugCheckData=0、KDNET 断点也进不去。
+5. **`-serial file:` 跨 reset 追加**（旧律重申）：S-tag 块数=boot 数，别当单会话读。
+
+### 遗留（r143 候选）
+
+1. **90 秒瞬态假死的根**：cycle 后中断/时钟仍断 ~90s 后自愈——自愈路径是什么
+   （超时后重 poll？看门狗重跑？）顺藤摸根。
+2. **服务无声 STOP**：无 SCM 事件、无 marker——谁卸的？
+3. 停车环 `nt!KeBugCheck2+0xc93`（RVA）在无 bugcheck 数据时=KiFreezeExecution 家族
+   ——触发源（哪个调试事件/断言）未定位。
+4. NPT 根遗像之谜（0x1589f3000=池数据）在 Active()=NULL 会话中不再出现，挂起。
+
+## Round 143 (2026-10-17 上午): "自愈"神话破灭 + 实验床污染清除 + cycle 死亡精确时间线
+
+### 本轮核心发现
+
+1. **r142 的"90s 瞬态假死→自愈"是误读**：细粒度轮询（5s）揭示真相——
+   - SSH 层抖动（8-10s 断流反复）≠ 网络死（裸 TCP 连接全程 0.00s 秒连，
+     断的是 sshd 的 KEX 认证=用户态算力停摆）
+   - **OpenSSH 服务自身崩溃**（事件 7034, 21:47:56）
+   - **guest 每 10-30 分钟脏重启**（Kernel-Power 41 链：21:49→21:51→22:03→
+     22:23，无 BugCheck 事件=三重故障式硬复位）——"自愈"=重启后的平静
+   - QEMU 进程也曾随 guest 关机退出（无 -no-shutdown）
+2. **实验床污染源清除**：Desktop\driverTest 里的 VMware 时代遗留装置
+   （cycle_startup8.cmd=sc delete/create svmb 指向旧二进制+旧版
+   stop/start+sc stop"DEVUNLOAD TRIGGER"；antiinject/othide/wndaudit
+   三个旧驱动在多次登录后被安装，事件 7045）。触发机制未完全定位
+   （启动夹/计划任务/Run/RunOnce/宿主 listener 全查无果；最可能=
+   Win1903 RegisterApplicationRestart 的崩溃复活）。**处置**：旧服务
+   sc delete、driverTest→driverTest.quarantine、RestartApps=0。
+3. **清创后干净床复测：cycle 死亡依旧**，且拿到精确时间线（marker）：
+   stop-enter→stop-done 63ms → start-enter→start-active 245ms →
+   start-kick-done +14ms → **~4 秒后 guest 崩溃（重启/冻结二形态**：
+   一轮三重故障重启 boot 10:44→10:49；一轮永久冻结零异常）。
+4. **-d int 定向复现（3GB）的死亡窗口**（分析已保全，文件已误删）：
+   尾部 ~70 事件全是健康流量（用户 #PF/0x2f/0xd1/0xe1 IPI 交织）→
+   最后一个事件=Servicing hardware INT=0xb1（kick/自退出 IPI）→
+   **戛然而止，零级联零三重故障轨迹**。冻结遗像：6 核全用户态、
+   4 核 IF=1、HLT=0、36 分钟零中断交付（#PF 都没有=不在跑正常代码）。
+   vapic 激活排查：日志无 vapic 痕迹 + TCG -cpu max 不广播 KVM 叶子
+   =Win10 不会启用 → CR8 路径有效，vapic 论排除。
+5. **两项修复落地但未救住 cycle**：①re-poll 撤门控（每出口必做——
+   1024 门在"零出口冻结"里永不触发）；②start-kick（start 后真
+   KeIpiGenericCall 冲刷全核投递路径）。gen-1/storm/demo 无回归。
+   **结论：APIC HARD 位失同步是真实存在的一层（NMI 治愈实验），但
+   gen-2 4 秒死亡另有主犯**——嫌疑集中在 gen-2 稳态的最初几秒内
+   全核中断机器同时失能的机制。
+
+### 新律/教训
+
+- **裸 TCP vs SSH 协议层分开测**：断流诊断先 create_connection 计时，
+  0.00s 连上=网络活，断的是上层（sshd KEX/用户态停摆）。
+- **"自愈"必须用 boot-time 验证**：LastBootUpTime 变了=重启冒充自愈。
+- **取证完再 rm/杀 QEMU**（r142b 定律重犯：3GB -d int 死亡窗口日志被
+  自己的 relaunch rm 掉——所幸尾部分析已提炼）。
+- **转储镜像=复制体不是快照**：qcow2 基盘带着 VMware 时代的全部测试
+  装置（旧驱动、开机脚本、复活注册），新实验床必须清创后才能信数据。
+
+### r144 开局
+
+1. **重跑 -d int 复现（廉价可再生），这次先提取后重置**：从 marker
+   时间戳对齐日志位置（stop-enter 前的最后 nudge 0xb1 簇），逐帧读
+   start-active→死亡 4 秒窗口的每一事件（含是哪核）。
+2. 若中断交付全停是主犯：查 QEMU 侧 cs->interrupt_request 谁能整组
+   清掉（cpu_interrupt_reset? reset 域? VMRUN 路径?）——源码在手。
+3. 候选修复面：gen-2 首秒的行为差异（enter 线程初始 guest 态 vs
+   gen-1 相同流程为何独 gen-2 死——找两代差异点：vCPU 页新分配、
+   hsave、ASID/TLB 序列号、QEMU env 残留态）。
+
+## Round 144 (2026-10-17 下午): cycle 死亡验尸报告——RSVD-PTE 三重故障 + "永久冻结"神话破灭
+
+### 本轮核心发现（证据全部落盘）
+
+1. **死亡=三重故障，不是冻结**。-d int 全程日志（16GB，保留为
+   `qemu/r144_qemu_dbg_full.log`）在偏移 0x7fcbb4b6 处捕获唯一一次
+   完整级联（`qemu/r144_crash1_window.txt`，1.5MB 窗口）：
+   ```
+   1509352: v=0e e=0018 cpl=0 IP=0010:fffff80152bf137a CR2==IP   ← RSVD+I 取指故障
+   check_exception old: 0xe new 0xe                              ← 处理中再 #PF → #DF
+   1509353: v=08 (#DF) 交付
+   check_exception old: 0x8 new 0xe                              ← #DF 处理中再 #PF
+   CPU Reset (CPU 0)                                             ← 三重故障
+   ```
+   死亡 RIP = `nt!ObpReferenceObjectByHandleWithTag+0x38a`
+   （该 boot nt 基址 0xfffff80152a00000，由 IDT=fffff8015a28e000 +
+   空闲簇十字定位；符号化=离线 cdb -z r140_kernel.dmp + C:\symbols
+   缓存，无符号链闭合）。e=0x18 全 16GB 仅此一例=非本底性内存损坏。
+2. **QEMU 源码定位 e=0x18 唯一来源**：`target/i386/tcg/system/excp_helper.c`
+   mmu_translate `do_fault_rsvd`（stage-1 guest PTE 保留位）。本床
+   `npt-state: no-active-view`（驱动侧 marker，每次 start 都打）=
+   **L2 无 NPT 运行** → stage2(S2_GPA) 路径不参与 → 故障时该 nt .text
+   页的 Windows PTE 确实带保留位。嫌疑二选一：(a) 有野写砸了 Windows
+   PTE（我方 VMM 或 QEMU 设备模型/DMA）；(b) QEMU 在 L1↔L2 状态交换
+   窗口用错 pg_mode/CR3 走表，把合法 PTE 读成保留位（TCG nested-SVM
+   私有 bug 类）。VMware vhv 时代从未见此形态。
+3. **"永久冻结"二次破灭**：三重故障后 guest 自动重启（bootex.log
+   12:00:57 为证）；重启后 25s 内二次死亡（0x80a19ead 簇，形态不同：
+   无异常级联，最后事件=池写 #PF+时钟中断，`r144_crash2_window.txt`）；
+   再重启后稳定（"冻结尸体"实为健康空转机——cpu0/1 在 KiIdleLoop
+   吃 1.5kHz 时钟 tick=Windows 1ms 定时器分辨率的正常形态，磁盘仍有
+   写+flush，SSH banner 活）。**上午看到的 ExReleaseResourceLite×2/
+   MiFinishHardFault/IopDequeueIrp/KeResetEvent 六核遗像=死亡前最后
+   一瞬的 I/O 等待侧写，不是死锁现场**。
+4. **死亡时间线重锚（guest 时钟不可信教训）**：QEMU 进程自 10-16
+   16:11 未死（-D 日志 Birth 为证）→ 10-16 23:0x r143 崩溃（0x122e942
+   簇）→ 隔夜会话跑 r144 批量 cycle（trace 时间戳跨 5.5h）→
+   **最后一个 marker=start-kick-done**（死亡紧跟 START/kick，非 stop）→
+   ~11:57 三重故障 → boot2 25s 死 → boot3 稳定。事件日志里
+   "11:23:01 最后心跳/34 分钟冻结"=guest 时钟在冻结期停摆的伪象。
+5. **驱动侧证据**（guest C:\svmb_trace.txt，已拉回 r144_svmb_trace.txt）：
+   多轮 cycle 全部 stop-done/start-active/kick-done 三点齐落（63ms/
+   245ms/14ms），死亡是概率性的（几十轮后一发命中）。VMCB-pas 每轮
+   正常分配。npt-state 每轮 no-active-view。
+6. **旁证与排除**：bootex.log 显示 vvfat FAT 写失败 0xc0000185（床病，
+   D: 每次启动 autochk=脏，但 RSVD 故障全日志仅 1 例→DMA 大面积
+   污染论不成立）；旧 1001 事件（0x80/0x4f4454）=r142 NMI 实验遗物；
+   svmb 服务 DEMAND_START/STOPPED（boot2 快死非驱动自启）。
+
+### 取证方法论沉淀（新工具链）
+
+- **离线符号化**：cdb -z dump + `C:\symbols` 缓存（windbg-mcp 产物）
+  + ln nt_base+RVA。本会话 windbg-mcp 不可用，一次性 cdb -z（无活体
+  内核附着，等同 open_cdb_dump 风险面）实测安全可控。
+- **跨 boot 的 nt 基址锚定**：-d int 状态块里的 IDT= 指针（初始 IDT
+  在 nt .data 固定 RVA）+ KiIdleLoop 特征 pc 簇。guest 事件时间戳在
+  冻结/慢机下不可作锚，必须用 host 侧文件 mtime/日志 Birth 对表。
+- **QEMU -D 日志 Birth=进程生死线**：QEMU 不 rm 不截断则跨日累积；
+  relaunch 前必须先 mv（Windows 句柄占用=先杀后改名；-D 会截断重开）。
+- **hostfwd 端口测试是假象**：QEMU 秒 accept，必须真 banner/真登录。
+
+### r144-D 实验（E2）：单线程 TCG 判决 MTTCF 竞态
+
+- 改动：`start_svmb.bat` 增 `TCG_THREAD` 开关（默认 single），撤
+  `-d int`（保留 cpu_reset,unimp,guest_errors）。
+- 判决逻辑：若 single-thread 下 N 轮 cycle 生存而 multi 下历史死率
+  ~30min/轮命中 → 根因=QEMU MTTCF 竞态（nested-SVM 状态交换或 ptw
+  A/D 写并发）→ 我方驱动无辜，床改 single-thread 长跑 + QEMU 上游
+  报障；若 single 下照样死 → 嫌疑收回我方 VMM 野写，下一轮 E3
+  （撤 start-kick / NPT=on 对照）。
+
+### r144-D/E2 结果（13:37-13:57）：单线程也死 → MTTCF 竞态假设击毙 → 根因抓到
+
+1. **E2 判决：single-thread 下 cycle 1 后即死**（40s 内 sshd banner 断流；
+   本轮日志 `qemu_dbg.log` 235KB 含显式 `Triple fault` 行 + 3 个 reset 簇）。
+   并发竞态（QEMU MTTCF、设备 DMA 竞态）全部排除——**死亡是确定性的，
+   且我方驱动是唯一变量**。
+2. **直接证据：QMP `info lapic`**——死亡态某核 LAPIC **IRR 常驻 0xD1（时钟）
+   且 TPR=0、ISR 空**：可投递中断永远不投递 = 该核 GIF=0 卡死（r142 定律：
+   QEMU 全部中断类别都过 GIF 门）。同时桌面仍在渲染（别的核活着）=
+   单核中断死 + 设备 IRQ 路由到死核 → 对应 I/O 永不完成 → sshd 饿死、
+   系统渐进瘫痪 → 最终三重故障。上午多线程尸体的
+   ExReleaseResourceLite/MiFinishHardFault/IopDequeueIrp 画像 = 同一病理
+   （I/O 等待永久停车）。**注意 `cpu N; info lapic` 切核不生效**（六次读
+   同一核，LDR 全 0x01 暴露）——单核结论，非全核。
+3. **ahci: IRQ#0 level:1 刷屏是良性床噪声**（16GB 旧日志从 0x6fd0 起同样
+   ~6k 行、有界；Windows storahci 走 MSI，INTx 悬空）。勿再误判。
+4. **根因（代码级）**：`svm_entry.asm` `vmrun_failed:` 裸 ret **无 stgi**。
+   QEMU 语义（svm_helper.c:915）：**#VMEXIT 尾部清 GIF**；正常路径靠
+   下一次 VMRUN（helper_vmrun:404）重置 GIF，宿主侧续跑路径
+   （exit_virtualization/self-exit）都有 stgi——唯独 `vmrun_failed`
+   （QEMU `SVM_EXIT_ERR = -1` 落点）漏了。触发链：某次 VMRUN 校验失败
+   （asid/cr0/cr3/cr4/dr/efer/iopm 某项不过，具体哪项待 0x185 beacon）
+   → cpu_vmexit 尾清 GIF + 回到 vmrun 后指令 → asm 读 ExitCode=-1 →
+   vmrun_failed → ret → **该核永久无中断**。
+5. **修复（r144-D1）**：`vmrun_failed` 先 `SvmbCrumbPostD(0x185, exitcode)`
+   （IRQL 安全面包屑，r113 家族）再 `stgi` 再退栈。EnterCore 原有的
+   "core N VMRUN failed" SVMB_LOGE + 部署时 `svmbctl serial on` 补齐
+   观测面。构建 b04ce141b5d45905c479ebfc3b46e65d9c8eb8017de78edd2ab72fcf4e6b5828
+   已双向校验部署。
+6. **验收（进行中）**：单线程 40 cycle + 20min 生存 + gen-1 回归；通过后
+   A/B 回 multi-thread（真床配置）同批复验。VMRUN 失败本身（为何校验
+   不过）是下一层问题——修复的意义在于失败不再等于杀 guest。
+
+### r144-D 后续（14:0x-15:0x）：stgi 修复≠根治 + 伪造 RIP 定性 + 排除链
+
+1. **stgi 修复部署后单线程仍死于 cycle 1**（但形态改善：一次 reset 后干净
+   启动稳定，修复前是连环 reboot 崩溃循环 3+ 簇——修复消除了"重启后再崩"
+   的放大器，未消除首发崩溃）。串口镜像证实 **vmrun_failed 从未触发**
+   （39KB 串口流无 "r13-vmloop-return"/"VMRUN failed"）→ GIF-via-vmrun_failed
+   不是首发死因（修复保留：它本身正确且消除了崩溃循环）。
+2. **E3b 单线程 -d int 死亡窗口（严格顺序日志）**：健康用户态调页 →
+   **v=0e e=0010 cpl=0 CR2==IP==fffff800f363137a**（内核取指故障，P=0）
+   → 0e→0e 升 DF → 08 处理中再 0e → **Triple fault** → reset。
+   关键：**故障 RIP 不在本 boot 内核世界**（本 boot 时钟处理器在
+   fffff805802xxxxx，故障 RIP 在 fffff800f3xxxxx）= **内核跳到了伪造
+   RIP**。对照晨间 RSVD 变体（fffff80152bf137a=当 boot nt+0x5f137a
+   =ObpReferenceObjectByHandleWithTag+0x38a，页表被判保留位）——两 variant
+   统一为"跳到坏地址"，按当 boot 页表内容呈现 P=0 或 RSVD。
+   两次 EAX 形态相同（0x17c929000/0x17c664000≈物理地址样）。
+3. **排除链**（本轮逐项）：MTTCF 竞态（单线程也死）；ahci INTx 刷屏
+   （16GB 旧日志同样存在=良性）；vmrun_failed/GIF（beacon 未触发+修复
+   无效）；HSAVE 页回收（EnterCore 每次 start 重写 MSR_VM_HSAVE_PA，
+   QEMU 每 VMRUN 重写 hsave 内容）；crumbs 面包屑（掩码环形，独立池块，
+   r136 部分豁免）；0xD1 卡 IRR（次生饥饿像——崩溃后残躯的 LAPIC 状态，
+   非首发机制）。
+4. **在控的下一步（E4）**：QMP RESET 事件触发的 VMCB 收割（RAM 跨 reset
+   存活）——三重故障瞬间各核最后的 ExitCode/Save.Rip：Save.Rip=伪造地址
+   → VMM 恢复了坏 RIP（我方出口路径）；Save.Rip 合法 → guest 自己跳坏
+   （更深的内存破坏）。脚本 `qemu/r144_e4_harvest.py`。
+
+### r144 验收终局（15:0x-17:24）：E5 单线程 6/6 + E6 多线程 40/40 全过
+
+- **E5**（单线程，修复版）：cycle 循环 6/6 轮存活 + E4 的 1 轮 = 7 连胜，
+  全程零 RESET（对照修复前单线程 cycle1 必死 2/2）。
+- **E6**（多线程=床标准配置，修复版）：**40/40 cycle 存活 + 20 分钟空闲
+  生存 PASS + gen-1 回归（start→30s→demo→stop）全程存活，VERDICT: PASS**
+  （demo 子命令报一次 cannot open \.\svmb err2 但整腿无 RESET、stop rc=0、
+  系统存活——脚注级瑕疵，不构成回归）。QMP RESET 事件收割全程武装，
+  未触发（残余机制本轮未现身）。
+- **统计对比**：修复前多线程 ~10-30 轮内死亡（隔夜+晨间会话），单线程
+  cycle1 必死；修复后 47 cycle + 生存 + gen-1 零死亡。vmrun_failed GIF
+  泄漏=cycle 死亡主机制结案。
+- **残余（r145 候选）**：伪造 RIP 三重故障（~1/8，E3b 实测一次）——
+  收割武器（r144_e5_loop.py 的 RESET 事件 VMCB xp）已就位，下轮循环
+  扩大样本直到它现形，Save.Rip 定归属（VMM 出口恢复坏 RIP vs guest
+  内存破坏自跳）。
+- 床配置复位：TCG_THREAD 默认 multi、-d int 撤除（定向复现时再加）。
+  证据文件：r144_qemu_dbg_full.log(16G)、r144_e3b_full.log(6.7G)、
+  r144_e4e5_single.log、r144_crash1/2_window.txt、r144_e*_com1.log、
+  r144_e2fix_*。磁盘 800G+，全保留。
+
+## Round 145 (2026-10-17 晚): 残余"伪造 RIP 三重故障"狩猎
+
+### 开局状态（承接 r144）
+
+- **猎物**：低概率（修复后 1 崩 / 47 cycle ≈ 2%）三重故障——内核取指故障
+  CR2==IP 于非本 boot 内核世界的地址（E3b P=0 变体已提取
+  `qemu/r144_e3b_crash_window.txt`；晨间 RSVD 变体在
+  nt!ObpReferenceObjectByHandleWithTag+0x38a）→ DF → 三重故障。
+- **武器**：`qemu/r145_hunt.py`——150 轮 multi-thread cycle，QMP RESET 事件
+  全程武装；崩时 RAM 未被新 boot 覆盖前 `xp` 收割全部 6 核 VMCB
+  （ctrl：ExitCode@0x70/ExitInfo1/2/exit_int_info@0x88/event_inj@0xA8；
+  save：CR3@0x550、Rip@0x578、Rsp@0x5D8）+ 串口流（serial on 已开）。
+- **判决矩阵**：
+  - 某核 Save.Rip == 伪造地址（或接近）→ **VMM 出口路径恢复了坏 RIP**
+    （嫌疑面：exit_virtualization 的 Extra2 栈、self-exit 的 GREG_RIP、
+    SvmbVmExitEntry 构造的恢复帧）；
+  - 全部 Save.Rip 合法 → **guest 自己跳坏**（内核内存破坏——回溯到
+    破坏者：NPT 无 read-disable 共同边界？或 QEMU 侧写入）。
+- **床态**：清理 41GB 无用日志（16G+6.7G+20.9G E6 无崩溃浸润日志；
+    e3b 级联窗口 402KB 先提取后删——取证完再删律）；干净重启，
+  multi-thread，无 -d int（收割器为主武器；需要级联帧时再定向开 int）。
+- 旧证据全保留：r144_crash1/2_window、e3b_crash_window、各 com1 流、
+  r140_kernel.dmp（符号化用）、全部 r144_*.py 工具。
+
+### r145 中场（17:33-21:0x）：150 轮狩猎的判决被推翻 + 新事件"驱动无声消失"
+
+1. **150 轮狩猎表面全绿，实为 16 轮真实 + 134 轮空转**：狩猎脚本只盯
+   RESET 事件、没验证 cycle 退出码。trace 文件按 boot 截断后计数=16 个
+   真实 cycle；服务在 ~17:56（第 16/17 轮之间）变成 STATE STOPPED、
+   设备 `\.\svmb` err 2，此后 svmbctl 全部打不开设备=空转绿灯。
+   **有效结论保留**：guest 全程零 RESET（残余未以"杀 guest"形态现形）。
+2. **死亡时刻第三次对齐**：驱动最后的活动 = 第 16 轮 start-kick-done
+   （串口：6 核 entercore+active、stop 阶段 6 核 self-exit 干净落账）
+   → 数秒内镜像卸载。与 E3b 崩溃、r143"gen-2 激活后 ~4s"同一窗口。
+   **残余这次没杀 guest，而是无声卸载了驱动本身**。
+3. **消失的性质**（已排除）：SCM 停止（12h 内 svmb 相关 SCM 事件=0，
+   连 17:34 的 sc start 都无 7036）；计划任务/Run 键（只余 Edge/OneDrive）；
+   guest 崩溃（零 RESET、系统全程健康）；VMRUN failed（串口 0 条）。
+   事件日志 17:50-18:10 仅 1 条 Skype DCOM 超时。
+4. **新事实：Parameters\AutoStart=1 默认开（r30 起）**——DriverEntry 直接
+   进虚拟化（21:00 重载后 info 立即 RUNNING 6/6、串口第 2 个 S0 块）。
+   17:33 的 sc start 同理自动就位。卸载若发生在"AutoStart 流程中"且
+   Start 失败回滚……待 hunt2 重演捕获。
+5. **hunt2 武装重跑**（`qemu/r145_hunt2.py`）：每轮 cycle 后 `svmbctl info`
+   设备探测；消失即快照全家桶——QMP VMCB 收割+各核 RIP、sc query/qc
+   （看 BINARY 路径是否被旧机器换成旧二进制！）、trace 尾、串口尾，
+   随后 6 分钟 reload-watch 看是否有东西自动重载驱动。
+
+### r145 终局（21:0x-21:4x）：hunt2 一轮命中 + 活体 wedge 全套取证 + 判决
+
+1. **hunt2 第 1 轮即命中**（21:04，重载驱动后的第一个 cycle）：stop 干净
+   （6 核 self-exit）→ start bring-up 重跑（svm check→cfgvmcb→cpu0-4 逐核
+   vmrun-fire）→ **串口在 cpu4 发射后、cpu5 entercore 前冻结**，随后
+   SSH 死、QMP 瞬时拥塞、驱动实例消失（VMCB 页=回收数据）。
+2. **活体遗像**（QMP 抢救所得）：3 核 KiIdleLoop+1 核 ERESOURCE 等待族+
+   1 核用户态（r144 衰竭像重演）；**LAPIC IRR=0xD1 卡死、TPR=0——GIF 死
+   签名在带 stgi 修复的驱动上重现 = 存在第二个 GIF 泄漏口**（非
+   vmrun_failed——串口 0 条 beacon）。
+3. **宿主侧**：6 vcpu 线程满转（CPU 4s/24s）；cdb 栈采样见瞬时 5 线程
+   SRWLock(BQL) 排队；4.3GB ELF 全内存转储已存 `dumps/r145_wedge.elf`。
+4. **三形态归一**：17:56 驱动无声卸载（guest 活）/ 21:04 bring-up 悬挂
+   （guest 衰竭）/ E3b 三重故障——**全部落在 START bring-up 窗口**
+   （cpu4→cpu5 尾段尤其），全部伴随 ≥1 核中断死。r143"gen-2 激活后
+   ~4s"、r144 修复后残余 1/47 全部同窗。
+5. **候选机制（r146 开局验证）**：cpu5 的 IPI 未交付（idle 环打转而非
+   进 entercore）→ KeIpiGenericCall 广播悬挂 → Start 卡死 → 回滚级联；
+   AutoStart（DriverEntry 内 Start）若撞上则 SCM 超时杀驱动=卸载之谜的
+   候选解。第二 GIF 泄漏口的具体路径 = 核心待办（ELF dump 里的
+   PsLoadedModuleList + 线程栈 = 第一刀）。
+6. **狩猎教训**：①验证 cycle 退出码与设备存活，否则绿灯有空转水分
+   （150 轮=16 真）；②SSH banner 抖动≠设备死，探测要分通道
+   （QMP RIP 移动判活）；③多线程+storm 负载下 QMP 也会瞬时拥塞，重试
+   再判死。
+7. **证据清单**：r145_wedge_com1.log（bring-up 死亡叙事）、
+   r145_wedge.elf（4.3G 全内存）、r145_qemu_stacks.txt（23 线程栈）、
+   r145_hunt2_result.txt、r145_svcstop_out.txt / r145_evt_out.txt
+   （服务消失取证）、r144 系列窗口文件。
+
+## Round 146 (2026-10-17 深夜): 4688 审计翻案——"无声卸载/悬挂/第二 GIF 泄漏"全部坍缩
+
+### 关键决策回顾（想错 vs 真实）
+
+| r145 判断 | r146 事实（4688+41 账本） |
+|---|---|
+| "驱动被无声卸载（SCM 零事件之谜）" | 崩溃重启：reboot 后 demand-start 服务自然 Stopped；崩溃死亡 SCM 无可记 |
+| "start bring-up 悬挂在 cpu4→cpu5" | 串口 ring 滞后假象；cycle 实际完成，~1s 后三重故障重启 |
+| "IRR 0xD1 卡死=第二 GIF 泄漏实证" | 单快照过度解读：boot/忙碌核的 IRR 暂态即可如此；从未做跨时间双探针验证 |
+| "wedge 全家桶取证（ELF dump 等）" | dump 拍在 21:23 第二次崩溃后的新 boot 上（svmb 缺席=reboot 后正常） |
+
+**账本**：Kernel-Power 41 @ 21:04:49 / 21:23:44 / 21:43:01 + 4688 全套 boot 序列
+（Registry→smss→autochk→winlogon...）+ autochk 脏盘 = 一夜三崩。RESET 事件
+全程未被捕获=QMP 拥塞丢事件（xp 同时段超时佐证），不是没有 reset。
+
+### r146 后的真实态势
+
+- **唯一存活机制 = E3b 级三重故障残余（cycle 完成后 ~1s 内崩）**，今晚高频
+  （hunt2/hunt3 各自 round-1 即崩；21:23 一崩无人在场）。r144 stgi 修复对
+  旧家族（vmrun_failed/GIF）依然有效（E6 40 轮干净是真实的）；残余在
+  无 -d int、有审计负载的今晚爆发——执行节奏敏感性显著。
+- **猎手修正**：①RESET 检测改宿主侧文件尾轮询（qemu_dbg.log 的
+  "CPU Reset" 行，-d cpu_reset 本就在开）——QMP 事件通道在崩溃瞬间拥塞
+  不可依赖；②"IRR 卡死"判定必须跨时间双探针；③任何"guest 死"结论前先
+  查 41/6005 账本（boot 进行时会伪装成一切神秘状态）。
+- **下一步（r146 继续）**：-d int 开 + 文件尾触发 + 崩溃即收割 VMCB/级联
+  窗口——高频复现条件下把伪造 RIP 的归属一次打穿。
+
+### r146 终局（22:0x-22:3x）：hunt4 一轮捕获 + 死亡形态定性 = DPC 风暴饿死时钟
+
+1. **hunt4 全垒打**（文件尾触发=宿主侧 qemu_dbg.log "CPU Reset" 行增长，
+  不依赖会拥塞的 QMP 事件通道）：round-1 cycle 后 +27s 崩溃重置，
+  6.4MB 级联窗口（r146_cascade_window.txt）+ 崩溃瞬间 VMCB 收割
+  （旧代 VMCB 页已回收成代码页=vmcb-pas 地址过期，收割器需读
+  cycle 后的新 pas——r147 修正项）。
+2. **死亡形态（崩溃前的最后数千事件）**：`v=0xE1`（DPC 中断）微秒级
+  连发、全部落在 **nt!KeZeroPages+0x10**（nt 基址 fffff80574c00000
+  由多 RVA 巧合锚定：0x5fa4/0x36cd6/0x1c5400），5 个 DPC 栈轮转，
+  EAX=0x80。**机理：无穷 DPC 队列回填（0xE1 优先级 14）压制时钟
+  （0xD1 优先级 13）→ 时钟饿死 → guest 时间冻结/sshd 停摆/渐进瘫痪
+  → 最终三重故障**。此前一切"IRR 0xD1 卡死"读数=被 0xE1 洪流压住的
+  暂态（r146 关键决策回顾表已更正）。
+3. **风暴源头未定**（r147 开局）：崩溃后队列已清空、ActiveDpc 抓空、
+  6.4MB 窗口整体已在风暴中（起点更早）。候选：①定时器/TSC 病理
+  （QEMU 遵循 VMCB TscOffset 而 vhv 忽略（r92）——TSC 在 cycle 下跳变
+  → 定时器轮重臂 ~0 延迟 DPC 风暴；②零页线程与 DPC 风暴的耦合
+  （KeZeroPages 是被打断的上下文非源头）；③某热路径 KeInsertQueueDpc。
+  驱动侧 cr3_monitor 的 DPC 机器已排除（cycle 路径不挂模块、CR3 不在
+  基线拦截集 op1=11040000/op2=00000001）。
+4. **r147 武器清单**：风暴进行中的活体 DPC 走查（用日志增速触发读取
+  而非崩溃后）；TSC/QPC 在 cycle 前后的 guest 侧审计 + TscOffset knob
+  状态核对；被打断线程的 KTHREAD 身份（PRCB CurrentThread）；
+  hunt4 收割器改为读 cycle 完成后的新 vmcb-pas。
+
+### r147 中场（23:5x-01:1x）：签名全破——4/4 崩溃同一伪造 VA 公式
+
+1. **床清创**：关 4688 审计、删 watcher、复位后 10 分钟无驱动零重置
+  （床本身稳定，崩溃全部与驱动 cycle 相关）；C: 不脏（崩溃无存储损伤）。
+2. **TSC 审计**：TscProbe 默认 off → TscOffset 恒 0（驱动侧无持续偏移）。
+   嫌疑收窄为 TCG 每核 TSC 在 cycle 停/启编排下的跳变（未定案——
+   采样器进程孵化两度失败，改并发同步法后 cycle 又崩在其窗口前段，
+   CSV 未落盘；待干净重跑）。
+3. **签名锁定（本 round 核心成果）**：4/4 三重故障（晨间/E3b/r147 两崩）
+   的故障 VA 全部满足 **`<0x10000 对齐的错基址> + 0x5f137a`**
+   （fffff80152bf137a=当 boot 真 nt!ObpReferenceObjectByHandleWithTag+0x38a；
+   另三次基址为异世界值）。用户态前奏 4/4 同型（同 ntdll RVA 序列
+   ...c5b0/...c4a9/...d248=e=0x14 执行取指+数据缺页交替）= **用户线程
+   发起带句柄的 syscall → 内核间接分支经"陈旧/混血指针"跳进异世界**。
+   公式指纹="错模块基+nt RVA"的混合指针。
+4. **排除**：ConfigureVmcb 对 GuestVmcb 全量 RtlZeroMemory（陈旧 save 区
+   理论对 GuestVmcb 不成立）；cr3_monitor/sysaudit 未挂不在 cycle 路径；
+   OffsetsResolve=结构偏移扫描（无函数指针数学）。
+5. **hunt5 教训**：收割时机竞速——VMCB pas 读取被 SSH 死打断、级联窗口
+   被 boot 洪流（~18MB/s）挤出。r148 修正：①提取改偏移锚定（检测时
+   记录 reset 行 offset，提取 [offset-8MB, offset+1KB]——本 round 手工
+   用此法救回了 crash#7 尾巴）；②pas 读取改 QMP 内存扫描 VMCB 签名
+   （ctrl 区 0x11040000/0x00000001 拦截位图 pattern）不依赖 SSH；
+   ③加 RSP 栈回读（xp RSP 物理地址→ret addr=伪造指针的调用者）。
+6. **下一层问题**：谁在 syscall 入口持有 stale_base+0x5f137a？
+   候选：SSDT/影子表内容陈旧（跨 boot 的 RAM 残留被新 boot 读用？
+   QEMU reset 不清 RAM）、win32k/影子 SSDT 路径、或 QEMU TCG 翻译
+   缓存的跨 reset 残留（TB 缓存重启不清?待查 QEMU 源码）。
+
+## Round 148 (2026-10-18): 归属判决 + 最后嫌疑 CR8 re-poll 的 A/B 定罪
+
+### 归属链（hunt6/hunt7 现场完成）
+
+1. **hunt6**（+1s 崩溃）：crash 状态块全捕——混合上下文寄存器像
+  （用户态值 00007ffe… + 低地址 GS 0xc68000 + 伪造 RIP + RSP 在新栈顶）
+  = "半换的注入帧"形状，不是健康内核线程。
+2. **hunt7**（+15s 崩溃，QMP 优先序收割）：**崩溃瞬间六个 VMCB 全部健康**
+  （ExitCode=0x72/CPUID、Save.Rip=本 boot 真实内核地址 fffff8036e3570c0、
+  save 区干净）→ **伪造 RIP 不经 VMCB 注入 = 非我方出口恢复路径**。
+  另见 B 形态：无异常级联的直接 reset。
+3. **排除链终版**：MSR 处理干净（LSTAR 不在拦截集、直通正确）；Stop 的
+  页泄漏设计确认（世代内不释放）；**跨 boot 回收杀死了"reboot 后读黑匣子"
+  的路线**（VMCB 页被新 boot 池复用——表/指针/机器码实拍）。
+
+### 最后嫌疑与 A/B 定罪实验
+
+4. **唯一站着的嫌疑 = 每出口 CR8 同值重写（r142/r143 re-poll）与 QEMU
+  注入状态机的交错**：r142 已载 QEMU 在"清 HARD 位→查可投递性"间有
+  竞态；我们的宿主侧 CR8 写在每个出口都撞 apic_set_tpr→apic_update_irq
+  这条路——半换上下文像 = 交错注入的指纹。
+5. **改动**：`s_cr8Repoll` 门控（默认 OFF，`Parameters\Cr8Repoll=1` 恢复
+  r143 行为）。构建 8b84e138692c7d1ca441a242d1f675fc725f68f18cdd7f7d6199ebc15ed59305。
+6. **A/B 初判**：re-poll OFF 后 hunt7 ×3（2 真 cycle + 1 SSH 抖动）
+  全部 5 分钟窗口无崩——对照今晚 re-poll ON 时 4/4 首 cycle 崩（+1s/
+  +15s/+27s/+98s）。10 轮加厚 soak 进行中；冻结家族（r142 原始病）
+  若复发则需把 re-poll 改成"冻结检测触发的低频重扫"而非每出口。
+
+### r148 终局（12:29-13:22）：A/B 判决落锤——CR8 re-poll 定罪
+
+- **re-poll OFF（构建 8b84e138）**：11 个真实 cycle（rc=0）+ 各 5 分钟
+  死亡窗口，**零崩溃、零冻结**，SSH 全程存活（12:29-13:22 连续）。
+- **对照 re-poll ON**：同夜 4/4 首 cycle 三重故障（+1s/+15s/+27s/+98s），
+  外加 E3b 与隔夜形态。
+- **判决：每出口的宿主侧 `__writecr8(__readcr8())` = cycle 后三重故障
+  家族的触发器。**机理（QEMU 源码侧待 r149 精化）：该写经
+  apic_set_tpr→apic_update_irq 与 QEMU 的"清 HARD 位→查可投递性→注入"
+  窗口交错，产出的半换上下文像（用户寄存器+低 GS+伪造 RIP）正是交错
+  注入的形状；5/5 伪造 VA=<0x10000 对齐错基址>+0x5f137a 的恒定公式
+  = 注入帧从陈旧/错位数据拼装时的稳定伪影。
+- **历史重释**：r142 的"HARD 位失同步冻结"（NMI 治愈实验）与 r146 判明
+  的 DPC 风暴饥饿是同一族；re-poll 治的是误诊的病，还注入了自己的毒。
+  re-poll 默认 OFF 落地（`Parameters\Cr8Repoll=1` 可复古用于对照）。
+- **r149 候选**：①QEMU 源码级机理精化（apic_set_tpr×注入窗口的精确
+  竞态——上游报障候选）；②真出现 HARD 失同步时的安全替代（低频
+  kernel-timer 驱动重扫，非每出口）；③床回归常规验收（NPT=on 点火
+  等原 r146 后续线恢复推进）。
+
+## Round 149 (2026-10-18): NPT=on 点火——机理全绿，稳定性翻红（r147 家族在 NPT 面复活）
+
+### 现象
+
+- NptEnable=1 + SerialLog=1 点火（master-HEAD 0afe843f，双向 SHA256 校验）：
+  sc start 零复位，`svm check: OK (NPT supported)`（QEMU 8000000A.EDX=10010001，
+  NP=1/NRIPS=0），`NPT enabled (ncr3=14364e000)`，6 核 `NP_ENABLE=1` 进入。
+- 三枚 M3 探针全绿（均跑在崩溃前的原始 boot）：
+  - **viewprobe（stage 1）PASS**：pml4=2a268000 == vmcbNcr3 回读。
+  - **s13 deny 触发 = QEMU TCG 真走 NPT 的直接证明**：exitDelta=514（vhv
+    指纹 257）；com1 spin-break 日志恰 1 条 → 真自旋 1 窗（257）+ 过窗后
+    即时 resolve 重试 257 次（TCG 对 resolve 后 invlpga 的 NPT 翻译
+    陈旧重端出，与 r57-r68 vhv"TLB 控制部分尊重"同族镜像）。ctl 判 FAIL
+    只是拿 r45 期望值做严格相等——误报。
+  - **s0 slide 满分 PASS**：detour=16/16、hooked 期原页 0 泄漏、remove 后
+    16/16 恢复、exitDelta=6（slide 换页路径 TCG 很快认账，无自旋震荡）。
+- **稳定性翻红**：hunt8 验收（10 cycle + 5min soak）表面全净，实为：
+  cycle 1（13:46:50）真实通过 → **13:47:57 guest 三重故障重启**（无
+  Minidump/无新 1001）→ cycle 2-10 全部打在重启后的无设备系统上（幽灵
+  绿灯）。boot time 账本（系统启动时间 13:47:57）定案。
+
+### r149 崩溃遗像（qemu_dbg.log @0x2a71693e5，-d cpu_reset 肖像）
+
+```
+v=0e cpl=0 IP=fffff80410b4137a CR2==RIP（取指缺页）
+RAX=000000017c70c000   ← 5 号核 VMCB 的 GPA（点火日志 vmcb=17c70c000）
+R14=00007ffe58010000 R12=7ffe58016da0 R9=7ffe5b12c590  ← 7ffe58-world nt 指针
+GS=002b base=e3eda7e000（CPL0 用户 GS）
+→ v=08 #DF → #DF 交付读 IDT 门故障（CR2=IDT+0xe0）→ Triple fault
+```
+
+- **RIP 分解 = r147 公式精确复现**：fffff8040a590000（0x10000 对齐）+
+  0x5f137a（ObpReferenceObjectByHandleWithTag RVA，页内偏移 0x37a 恒定）。
+  本变体相当于 r147 crash#1（fffff80152bf137a）的"真 nt 目标"形态：目标
+  地址是本 boot 真 nt 函数位置，但**取指时 NPT 没供出该页**。
+- 寄存器组半换（7ffe58-world 指针 + 用户 GS @CPL0）= r147 半换上下文
+  指纹完整再现；RAX 攥 VMCB PA = 新证据（出口路径上下文泄入 guest
+  寄存器的方向）。
+- 串口黑盒遗言：纯 code=72 CPUID 正常流量，无 crumb/无 NPF/无异常——
+  瞬死形态与 r147 一致。
+
+### 关键决策回顾
+
+| 当时以为 | 实际 |
+|---|---|
+| CheckCpu 的 NP 位检查可能拦点火 | QEMU TCG 早已暴露 NP=1（r139+ 全轮通过该门） |
+| s13 exitDelta=514 "FAIL" | NPT 走表的真实证明；514=257+257（一窗自旋+过窗 resolve 重试） |
+| hunt8 rc 曲线 0,1,1,0,1,0,0,0,0,0 =间歇失败 | rc=vm.py 的 SSH 退出码：1=guest 重启中断连；0=幽灵（svmbctl "[!] cannot open" 被 vm.py 吞掉退出码照样 0） |
+| cycle 2-10 也算验收样本 | 13:47:57 崩溃后全部无效（服务 demand-start 不自启→无设备） |
+| r148 定罪后崩溃家族已灭 | **只灭了 NPT=off 面**；NPT=on 有独立触发路径（r142 时代就是 NPT=on 床） |
+
+### 排除/修正
+
+- vm.py `exec` 永远 return 0（不透传 guest 命令退出码）——hunt 脚本必须
+  解析输出文本（"[!]"/"[+]"）而非 rc；每 cycle 前后加 uptime/设备存在性
+  防幽灵样本。
+- hunt8 的 32MB 尾窗复位扫描有 ~10s 盲区（watch 间隙），13:47:57 复位簇
+  被 18MB/s 引导洪流在首个 poll 前冲出窗外（r147 位移教训的 watch 态
+  变体）。对策：watch 循环不间断 + 复位计数单调化（只增不减）+ 账本
+  （boot time）事后审计兜底。
+- com1.log 是宿主侧串口文件，跨 guest 重启持续累积（本 boot 不打印 =
+  重启后驱动未加载）——计数分析必须按 boot 边界切分。
+
+### r150 候选
+
+1. **NPT=on 崩溃家族专项猎杀**：重臂 -d int 定向复现（cycle 1 后 60s 窗），
+   拿完整 v=0e 级联 + RSP 栈回读（QMP 页走表）定位调用者；RAX=VMCB PA
+   线索（出口路径寄存器保存/恢复与 NPT 视图切换的竞态？）。
+2. 对照实验：Cr8Repoll=1 + NPT=on（家族是否叠加/独立）、NPT=on +
+   不跑 cycle（纯点火 soak——崩溃是否需要 stop/start 编排）。
+3. QEMU 源码侧：resolve 后 TCG 对 invlpga-NPT 翻译的陈旧重端出（s13
+   514 算术）+ 注入窗口×apic_set_tpr（r148 遗留）合并考察。
+
+床态：guest 已重启健康（无设备无 NPT）；Parameters 仍布 SerialLog=1 +
+NptEnable=1（下次 sc start 即 NPT 态，r150 直接可用）。证据文件：
+r149_crash_window.txt / r149_hunt8_result.txt / com1.log（含全部串口史）。
+
+## Round 150 (2026-10-18): NPT=on 崩溃按需复现 + 纯 soak 对照 + 六核 VMCB 死亡现场
+
+### 复现与对照（hunt9，增量复位扫描工艺）
+
+- **按需复现 3/3**：点火 → cycle 1（`[+] HV_CONTROL(2) ok`）→ +67s/+82s/+40s
+  三重故障重启（17 行复位簇，增量扫描 0.5s 轮询零盲区现场捕获）。
+- **纯 soak 对照（240s 无 cycle）全净**：崩溃需要 stop/start 编排，不是
+  NPT 常开本身。触发上下文=cycle 的 Stop→Start 迁移（VMCB 重初始化+
+  NCr3 重发布+flush-all 武装+start-kick IPI）。
+- 崩溃后所有 cycle/设备判定：hunt9 的文本解析+设备存在性守卫全部正确
+  拒绝幽灵样本（r149 三律生效）。
+
+### 死亡现场（两个 boot 的 QMP +0s 收割 + -d int 遗像）
+
+- **公式 7/7**：RIP=本 boot nt 基址+0x5f137a（页内偏移 0x37a 恒定；
+  r147×4 + r149 + r150×2）。本家族变体="真 nt 目标页 PTE 链不 present"。
+- **六核 VMCB 死亡态（两个 boot 一致）**：exit_code 全=0x72（CPUID，
+  正常流量）、exitinfo1/2=0、exit_int_info=0x3e1 族垃圾（vector 0xE1/
+  type=exception/valid=0——陈旧残留）、save@0x578 的最后出口 RIP
+  **六核全部=nt+0x5f7130 同一点**。
+- **符号化（离线 cdb -z r140 dump）**：nt+0x5f7130 =
+  **nt!CmpDereferenceKeyControlBlock+0x340**（注册表 KCB 解引用）；
+  nt+0x5f137a = ObpReferenceObjectByHandleWithTag+0x38a（r147 ground
+  truth）。两者都是引用记账路径=cycle 后清理风暴形状（svmbctl 进程
+  退出+SCM 注册表操作）。
+- **用户态前奏**（-d int）：e=0014 执行缺页×3 打在 7ff9-be37-world
+  （R14 指向的同世界 ntdll）+ e=0004 数据缺页交替=r147 前奏签名。
+- **半换上下文三件套**（3/3）：CPL0 用户 GS、RBP=用户栈指针、
+  7ff9-world 指针（R12/R14/R9）+ 内核 RSP/RIP；**RAX=VMCB 池区 GPA**
+  （r149=精确匹配 cpu5 VMCB；r150×2=池区内非基址）。
+- **结构性发现：故障 CR3 走表必然失败**——RSP 回读在 +0s 执行仍
+  FAILED：走表用的正是已损坏的 CR3（内核取指缺页的直接原因就是该
+  CR3 的 PTE 链不 present）。调用者猎杀需换门：VMCB save 全量 dump
+  （0x400-0x740）@+0s / 物理扫描 / 对照故障 CR3 vs VMCB-save CR3。
+
+### 工具链修复（r148 遗留 bug）
+
+- **hunt7/hunt9 两代的故障行正则从未匹配过**：`pc=\w+ CR2=` 假设两
+  字段相邻，实际中间隔着 ` SP=0018:...`——RSP 回读路径在 r148 也从未
+  真正执行。修复=`pc=\w+.*CR2=\w+`。
+
+### 关键决策回顾
+
+| 当时以为 | 实际 |
+|---|---|
+| RSP 回读失败=时机太晚（重启后页表回收） | +0s 也失败——坏的就是页表状态本身（结构性） |
+| 六核同指针=可疑异常 | 六核全在 CmpDereferenceKeyControlBlock+0x340 收敛=清理风暴公共自旋点 |
+| 死亡目标=异世界错基址（r147 主变体） | 本家族 NPT 面 3/3="真 nt 目标+页不 present"变体（r147 crash#1 同型） |
+| 崩溃=NPT 常开即死 | 纯 soak 240s 净——stop/start 编排是必要条件 |
+
+### 机理假说（r151 靶子）
+
+- 主嫌疑：**cycle 的 Stop→Start 迁移在 QEMU TCG×NPT 下留下陈旧分页/
+  寄存器伪影**（半换上下文=两线程上下文交错；RAX=VMCB 池 GPA=出口
+  路径上下文泄入；故障 CR3 的 PTE 链不 present=陈旧/错代 CR3——
+  r147 候选"QEMU reset 不清 RAM 的跨代残留"升级）。QEMU 源码侧：
+  gen-2 vmrun 的 NCr3 重发布/flush-all 履行情况+TCG TB 缓存跨迁移
+  残留是首要检查点。
+- 副产物问题：s13 的 514 算术（resolve 后 invlpga-NPT 陈旧重端出
+  257 次）与本案的"陈旧翻译服务"是否同根。
+
+### 床态
+
+guest 已重启健康（无设备）；Parameters 仍布 SerialLog=1+NptEnable=1。
+证据：r150_hunt9_result.txt / r150_crash_window.txt（两个 boot 的窗口，
+后者覆盖前者）/ r150_rsp_readback.py / hunt9 脚本本体。
+
+### r153 候选
+
+1. QEMU 源码侧：EVENTINJ 交付在 TCG×svmb 嵌套下不完成的机理（与
+   r150 的"Stop→Start 陈旧伪影"合并考察——两案都指向 QEMU 事件/
+   状态机的嵌套交付路径）。
+2. r150 崩溃家族续猎（拆腿二分 stop-only/start-only）。
+3. ovle2e 尾腿 0xC0000194 追查。
+
+## Round 153 (2026-10-18): QEMU 源码级合并考察——r152/r136 死因统一为"毒化的 exit_int_info"；M1 翻案路径打开
+
+### QEMU v11.1.0 源码发现（三处引文，qemu/r153_qemu_src/）
+
+1. **do_vmexit（svm_helper.c:904-913）**：
+   `exit_int_info ← event_inj; exit_int_info_err ← event_inj_err; event_inj ← 0`
+   —— exit_int_info 是 **event_inj 的镜像**，不是 APM 语义的"被本次
+   退出打断的事件"。
+2. **handle_even_inj（system/seg_helper.c:85-111）**：guest 语境下交付
+   **任何**异常/中断时，若 event_inj 无效则顺手写入"当前正在交付的事件"
+   ——所以任意时刻 event_inj 可能持有**上次已交付事件**（含硬件 INTR），
+   下次任意出口的 exit_int_info 就镜像它。
+3. **helper_vmrun 注入块（414-469）**：VALID 位门（无效=静默跳过）；
+   EXEPT 型 **vector≥31 或 =2 → cpu_vmexit(SVM_EXIT_ERR)**（445-446）
+   ——落到 svmb 的 vmrun_failed 几何（r144 修复路径）。
+
+### r152 机理终局（实测 smoking gun 闭环）
+
+- svmb `ReinfectExitEvent`（exit_dispatcher.cpp:209+）按 APM 合法语把
+  ctx.IntInfo（exit_int_info）原样拷回 EventInj。
+- QEMU 侧：#UD 出口的 exit_int_info = event_inj 镜像 = **陈旧的已交付
+  事件**（本 boot=一个 NMI）。
+- **qemu_dbg 实证**：冻结时刻 `23435313: v=02 e=0000 cpl=0
+  IP=0010:fffff80076a9e1bc`——**注入交付的是 NMI，落在 ud2 的 RIP 上**。
+- 内核态意外 NMI → 0x80 BUGCODE_NMI → bugcheck 核间同步卡死=冻结形态。
+- **跨平台统一**：r136 vhv 的"5 minidump 全系 0x80"同族同因——两家仿真
+  层的 exit_int_info 都不是"引发本出口的事件"。**M1 死刑的真名是
+  poisoned exit_int_info，不是"#BP 出口不被容忍"。**
+
+### r150 关联腿
+
+- 死亡 VMCB 上的 exit_int_info 垃圾（0x3e1 族）= do_vmexit 镜像的
+  handle_even_inj 残留（已交付事件残影）——**惰性簿记，除非被重注入**。
+  r150 配置（InterceptExc=0）下 ReinfectExitEvent 不在 CPUID 出口路径
+  上——r150 的确切杀手仍开放，但"陈旧事件注入"类危害已被本案实证。
+- EXEPT≥31 → SVM_EXIT_ERR 的几何记为地雷：任何把 vector≥31 EXEPT 型
+  写进 EventInj 的路径都会触发。
+
+### 附带观察（未解，记档）
+
+- 本次冻结**部分自解**：数分钟后 SSH 复活、驱动服务 STOPPED、设备
+  消失、VMCB 页被释放重用（段描述符内容）、零复位、boot 仍是 15:19
+  ——有序拆驱动发生在无重启的前提下，机制未明（gIoGate 持有者死亡后
+  的排队 IOCTL？SCM？待 r154 观察）。
+- 重演冻结 2/2 确定性；首次读 VMCB 得码页内容=自解后重用（跨读演化，
+  非 QMP 格式问题——raw 输出 0x 前缀格式正常）。
+
+### r154 候选（高价值）
+
+1. **svmb 补丁：ReinfectExitEvent 改为从 EXIT CODE 构造事件**
+   （vector = Exit - EXCEPTION(0)，type=EXEPT，错误码从 Info1）而非拷
+   IntInfo——QEMU 面的透明转发应即复活 → **M1 判决可能翻案**
+   （dbgtest 期望 exc32=0xC000001D + 环增长）。vhv 面保持旧路径兼容
+   （或双轨）。
+2. r150 崩溃家族续（拆腿二分）。
+3. 冻结自解现象观察（若复现，先拉 4688/SCM 账本）。
+
+床态：部分自解后健康（无设备）；证据：r153_qemu_src/（源码树）+
+qemu_dbg v=02 行 + com1 exc exit 行。
+
+## Round 154 (2026-10-18): M1 翻案补丁轮——双 bug 修复+行为验证；死亡点围拢至 6 语句窗口
+
+### 补丁链（全部编入并哈希验证部署）
+
+1. **ReinfectExitEvent 改从 EXIT CODE 构造**（exit_dispatcher.cpp）：
+   vector=Exit-0x40、type=EXEPT、错误码取 EXITINFO1（有错码向量才置
+   Ev）。废除 IntInfo 拷贝（r153 定罪的毒源）。
+2. **EVT 枚举对齐 APM/QEMU**（svm_defs.h）：EVT_NMI=1→2、EVT_EXCEPTION
+   =2→3、EVT_SOFTINT=3→4（type 1 保留）。**QEMU svm.h 实证**：NMI=2/
+   EXEPT=3/SOFT=4。旧枚举错位一格=svmb 每次"异常注入"实为 NMI 注入
+   ——r136 vhv 0x80 家族与 r152/r153 QEMU 冻结的共同根。
+3. InjectEvent 诊断桩（pre/wrote/readback 三值日志）。
+
+### 行为验证（逐构建冻结对照，4 次冻结全部确定性复现）
+
+- 补丁前：冻结+**v=02 NMI 交付在 ud2 RIP**（r152/r153 smoking gun）。
+- 枚举修正后（96d63453）：**ud2 RIP 上的 v=02 消失**（0 命中）——
+  毒源确认拔除；但 v=06 也不出现（注入仍不交付），冻结依旧。
+- 带诊断桩（fb5bf637）：**injdiag 零行**——InjectEvent 从未执行到。
+
+### 死亡点精确围拢
+
+HandleExceptionExit 的 "exc exit" 日志（debugger.cpp:122）→ InjectEvent
+的 injdiag 日志之间：if 比较 + AdvanceRip 赋值 + pre.Data 读。三个构建
+（补丁前/后/带桩）的静默点一致。排除：活锁（exc exit 仅 1 行）、
+vmrun_failed 串口 crumb（该路径不进串口但 injdiag 先于 vmrun，零行
+排除）、SEH 接到（无第二条 s6 日志）。
+
+### 附带现象（4/4）
+
+冻结后 ~60-90s **自解**：驱动有序拆除（服务 STOPPED、设备消失、
+VMCB 页释放重用=代码/日志文本）、零复位、boot 不变、SSH 恢复。
+机制未明（拆除路径无 Stop() 日志）。
+
+### T+0 冻结快照（hunt10 自动收割）
+
+六核 exit_code 全=0x72（CPUID 正常流量——#UD 出口早已处理完并被覆盖，
+核心恢复过 guest 执行）；event_inj=0x302 族（vector2/type3/**valid0**/
+err4|0x14）+ exit_int_info=0xb0e 族（#PF 镜像残影）——写入者未定；
+冻结中单核 RIP=0x9846a0。
+
+### r155 候选（按性价比）
+
+1. **KDNET 断点取证**（windbg-mcp，qemu-vm-kernel-debug 技能）：在
+   debugger!HandleExceptionExit 尾部/ReinfectExitEvent/InjectEvent 下断，
+   看死亡窗口内哪条指令不归——这是唯一直视手段。
+2. 自解现象账本（复现时先拉 7036/7045/4688 再等）。
+3. asm 出口路径审读（异常类出口的 dispatch→handler→re-vmrun 链）。
+
+### 床态
+
+自解后健康（服务 STOPPED）；Parameters 仍 NPTEnable=1+SerialLog=1。
+构建哈希链：21caa1db（出口码构造）→96d63453（+枚举）→fb5bf637
+（+诊断桩，当前部署）。
+
+## Round 155 (2026-10-18): KDNET 断点取证——调试门重开+死亡窗口断点首布；r154"6 语句窗口"结论降级
+
+### KDNET 门重开（传输层根因链）
+
+- 三连 30s 超时的根因复合：①QEMU 长寿命进程的 slirp 状态劣化（deploy
+  重启后即愈）；②决断测试留下的 `bcdedit /debug off` 自坑（目标不再是
+  调试目标）。修复=QEMU 重启+debug on+重启+早期附着。
+- **新工具链律**（已沉淀进 qemu-vm-kernel-debug 技能）：run_kd_command
+  内 `;` 链会把后续整串拼进首命令（sympath 被污染=符号全灭）——一律
+  单命令；符号加载用 `.reload /f /i svmb.sys`（/i 强匹绕 GUID 校验）；
+  bu 需全名 `svmb!svmb::ReinfectExitEvent`；驱动未加载时 x 空=预期。
+
+### 死亡窗口断点首布（QEMU 战役首次活体断点）
+
+- bp0=svmb!svmb::ReinfectExitEvent@28da9300、bp1=svmb!svmb::InjectEvent@
+  28da8fb0（0xCC 软件断点）。
+- 布防后未及武装阶梯（SSH 命令尽数落入死窗），目标在纯点火+断点态下
+  撞出 **"Break instruction exception - code 80000003 (first chance)" +
+  "A fatal system error"（bugcheck 级，callbacks 未调用）**——kd 缓冲
+  全程记录（点火日志+exit trace 洪流+KDTARGET refresh+int3+fatal）。
+- 崩溃身份（码/栈）未收割：!analyze 在 bugcheck-wait 目标上超时（技能
+  半僵纪律），会话随后僵死，已 close(resume=false)+清 kd+复位。
+- 候选解读：bp/KdEnterDebugger 冻结广播 × 虚拟化核的交互；或全新崩溃
+  形态。**待 r156 以正确编排重演**（早期附着→断点→g→SSH 武装重试到
+  成功→dbgtest→紧轮询 wait_for_break→bp 命中即轻命令取证）。
+
+### r154 结论降级（方法论修正）
+
+- **串口镜像是"有损环形"定律回咬**：探针零行≠未执行。r154 的"6 语句
+  窗口"（exc-exit 后执行蒸发）证据等级下调。
+- 更贴合观察（exc-exit 为绝对末行+所有 exit trace 同时停摆）的新假说：
+  **日志/串口锁被冻结核持有**——ud2 核冻在 SVMB_LOGW 内部或其后，
+  其余核的日志全部阻塞在锁上。
+
+### 床态
+
+复位后健康（debug off、服务 STOPPED、Parameters 仍 NPTEnable=1+
+SerialLog=1）；部署二进制 0617be77（含 reinfect/injdiag 探针）。
+
+## Round 156 (2026-10-18): 串口 A/B 收满矩阵 + 0x80'TDO' 跨平台实锤 + "仪器扭曲实验"定律
+
+### A 弹：串口镜像 A/B（r155 假说判决）
+
+| debug | SerialLog | 结果 |
+|---|---|---|
+| on | on | 冻结（r152/r153） |
+| off | on | 冻结（r154） |
+| off | **off** | **冻结（r156 实测）** |
+
+- **日志/串口路径排除**——冻结在异常出口处理路径更深处。
+- 冻结签名四格恒定：零 v=06（注入不交付）、零 v=02、零复位。
+
+### B 弹：仪器扭曲实验（本轮方法论级发现）
+
+- 编排：debug on+重启+kd 早期附着（会话秒建）→ g → SSH sc start
+  （驱动加载+NPT 点火，**未布任何断点、未挂模块、未武装**）→
+  **first-chance int3 + "A fatal system error"**。
+- **KiBugCheckData 实读：0x80 + 参数 0x004f4454（'TDO'）**——与 r136
+  vhv 五连 BSOD、r70 kd 活捉（"首笔 out=1 trip → NMI 'TDO' → 0x80，
+  r13=0x4f4454"）完全同码同参。**'TDO' NMI 家族跨平台实锤（QEMU 面新低
+  门槛复现：调试器在场+点火即可，无需断点/异常拦截）**。
+- **推论（死结）**：M1 冻结的 kd 断点取证需要 debug on+调试器在场，
+  但该配置在点火时就 0x80'TDO' 崩溃——**仪器在场改变实验结果，断点
+  正剧在 0x80 解决前无法上演**。r155 的"意外崩溃"同因归档。
+
+### 待解族谱（当前形态）
+
+1. **0x80'TDO' NMI 族**：r70/r136（vhv，WheaReportHwError→PSHED 链）
+   + r155/r156（QEMU，调试器在场+点火）。QEMU 面的 NMI 源未定（QEMU
+   自身 NMI 源稀少；WHEA 路径待查）。
+2. **M1 冻结族**（debug off 稳定复现）：exc-exit 处理路径深处，串口/
+   debug/日志全排除——r157 需要 QMP-only 或驱动自证（非串口通道）手段。
+3. 两族关系未定（可能同根：某硬件错误/NMI 源在两种观测配置下分别
+   表现为崩溃/冻结）。
+
+### 床态
+
+复位归常态（debug off、服务 STOPPED、Parameters 仍 NPTEnable=1+
+SerialLog=1；部署 0617be77 含探针）。
+
+## Round 159 (2026-10-18 深夜): ctl-start 手动点火死刑修复——播种栈生命周期根因 + IoQueueWorkItem 委派；冷路径两连绿
+
+### 现象（用户指令触发）
+
+用户令：修复"先加载驱动再 svmbctl start 虚拟化会蓝屏"路径（r158 补遗
+记录的死刑径②）。产物面早有伏笔：SVMB_PRODUCTION 从 r85 起直接拒掉
+IOCTL start，注释自称 "round-27 known-fatal entry context"——该路径
+从未被修过，只是被禁过。
+
+### 根因（hunt12/hunt13 两轮现场 + QMP 活检）
+
+**播种模型**：`RunOnEachCore`（util.h）= 单线程组亲和串行走核；
+`EnterCore` 把**播种线程的寄存器+内核栈快照**种进每个核的首个 VMCB，
+后续穿越在播种线程里完成（main.cpp:1593 注释自证）。
+
+- AutoStart 播种者 = SCM 装载线程：**栈长存** → 绿。
+- ctl-start 播种者 = svmbctl.exe 的 IOCTL 线程：ctl 打印完即退出、
+  进程终止、**内核栈被释放** → 六核僵尸快照全部踩在已释放栈上。
+
+**死亡指纹（hunt13 QMP stop 活检，修复前）**：
+1. 点火完整成功（"virtualization active on 6 cores"，ctl 正常返回）；
+2. **零 VMEXITS**（ExitTraceLeft=200/核全新预算，一条没打）；
+3. 六核**完全相同**的 RIP/RSP/CR3/RAX（共享一个内核栈=不可能的独立调度）；
+4. 卡点在 nt 异常派发路径（`mov edx,[KdDebuggerEnabled]; test; jne` 门），
+   栈上两枚 **0xC0000503** 异常记录 + svmb 模块帧；
+5. CPU 满转（故障重入循环：派发→ret→重执行→再派发）；
+6. ~10s 后硬复位，**无 bugcheck 无 dump**（VMCB 物理页被新 boot 覆写）。
+
+### 修复（main.cpp HV_CONTROL action==0）
+
+把点火**委派给 IoQueueWorkItem 派迟队列系统工作线程**，IOCTL 等事件
+收结果——池化工作线程的栈长存，ctl-start 与 AutoStart 完全同形。
+构建 cdfd7056。
+
+### 验证（两连绿）
+
+| 场景 | 结果 |
+|---|---|
+| 冷 boot + AutoStart=0 静默加载 + svmbctl start | 点火+串口立刻洪灌+**120s 零死亡**+info RUNNING/6核/17884 出口+dbgtest 正常返回+mod attach 正常 |
+| 复位重演同场景 | 点火+洪灌+**120s 零死亡**+RUNNING/6核/11126 出口 |
+
+### 边界与残留（诚实账）
+
+- **同 boot 二度点火仍死**（先手动点火绿→svmbctl stop→sc stop→sc stop
+  卸载→重载→再 svmbctl start）：六核僵尸签名复现，卡点换成 HAL 的
+  `in al,dx`（端口 0x71=CMOS 读，RAX=RIP+4 自指，单栈共享）。
+  **= r150 家族 cycle-crash 已知开放类**（r139 "stop→start 重入死"），
+  非本次修复目标，留给 r160（新指纹：CMOS in 循环）。
+- svmbctl stop（action=1）仍跑在 IOCTL 线程——未动，用户规程
+  （stop→卸载→重载）覆盖其风险。
+- AutoStart=1 已复位；SVMB_PRODUCTION 的 IOCTL-start 拒绝保留
+  （注释已更新为 r159 修复后的保守拒绝）。
+
+### 新铁律
+
+1. **播种栈生命周期律**：任何进虚拟化的入口，播种线程的栈必须长存
+   （SCM 装载线程/池化工作线程 ✓；会退出的用户进程 IOCTL 线程 ✗）。
+2. **僵尸快照指纹**：全核相同 RIP+RSP+CR3 = 播种快照未分叉；零出口+
+   CPU 满转 = 快照在踩死栈/死循环。
+3. **QMP stop 后 system_reset 不会自动跑起来**——必须补 cont（PAUSED
+   陷阱，本轮浪费 7 分钟）。
+
+### 床态
+
+r159 修复构建 cdfd7056 在位并 RUNNING（手动点火态）；AutoStart=1 已
+复位；debug off。
+
+## Round 165 (2026-10-19): 嵌套战役开张——L2 测试驱动落地（骑 svmbctl 面），stage-0 反嵌套拒绝全绿+串口交叉验证；今日虚拟化面基线入档
+
+### 设计决策
+
+L2 测试驱动第一版**骑在 svmb.sys + svmbctl**（`svmbctl l2test` = NPT_PROBE
+Stage 18）：H 的 VMRUN 只需在 guest CPL0 执行，IOCTL 线程就是；SEH 捕获
+svmb 注入异常的通路被 dbgtest 实证（r157 #UD face PASS）。独立 l2test.sys
+等反射面需要真实性时再拆。判据纪律：**verdict 必须对串口**
+（r164 律）。
+
+### 判决（一发过，2026-10-19 下午）
+
+```
+l2test s0: exc=80000003 vmcb=2ad8e000 svme=0 efer=d01(1) hsave=17c298000(1)
+[+] L2 s0 PASS (anti-nesting rejection clean: VMRUN -> #BP -> SEH)
+串口: vmrun exit: anti-nesting reject vmcbPa=2ad8e000   ← 与 verdict 同 PA
+串口: nptprobe s18: exc=80000003 vmcbPa=2ad8e000 ...    ← 同
+guest 活 + svmb RUNNING
+```
+
+全链：H 的 `__svm_vmrun` → ic2.VMRUN 出口（拦截面先于 VMCB 校验/装载）→
+HandleVmrunExit 注入 #BP(SOFTINT)+推进 NRIP → guest 内核派发 → 探针
+`__except` 捕获 0x80000003 → 线程继续 → 干净拒绝。安全门前置：r37 律
+反向适用（内核 #BP 仅在 kernel debug ON 时挂死）——跑前 `bcdedit` 验证
+`debug No` ✓。
+
+### 基线档案（今日虚拟化面=r166+ 要重塑的对象）
+
+| 探针 | 结果 | 含义 |
+|---|---|---|
+| CPUID 80000001h ECX.SVME | **0** | hideCpuid 把 SVM 位对 guest 屏蔽——H 从 CPUID 看不见 SVM |
+| EFER 读 | 0xd01（SVME=0） | EFER 读被拦截但透传 guest 真值 |
+| VM_HSAVE_PA 读 | **0x17c298000 成功** | protectHsave=0 默认 → HSAVE 对 guest 可读——**指纹泄露点**（H 可探测 hypervisor 的 HSAVE 布局）+ r166 MSR 虚拟化第一目标 |
+
+### 新床律：vvfat 共享不热刷新
+
+宿主侧改 `qemu\share\` 后运行中的 guest 看到的还是旧文件（vvfat 是 QEMU
+启动时生成的 FAT 快照）。本轮实踩：`copy /y D:\svmb.sys` 静默拷了旧弹、
+sc start 点了旧构建——**三查律的哈希比对当场拦截**。热换弹一律走
+`vm.py push`（SFTP 直推），或 deploy.bat 重启 QEMU 重新生成共享。
+
+### 代码面
+
+- `npt_probe.cpp` Stage 18：CPUID/EFER/HSAVE 三探针 + 零化 VMCB 骨架 +
+  `__svm_vmrun` + SEH 判决（参数是 size_t 物理地址，非 void*）。
+- `hypercall.cpp` HandleVmrunExit 加串口行（`vmrun exit: anti-nesting
+  reject vmcbPa=`）——VMRUN 出口的路径证明。
+- `app/main.cpp` `CmdL2Test` + `l2test` 面 + usage。
+
+### r166 候选（嵌套战役路线）
+
+1. **MSR 虚拟化层**（EFER/VM_CR/HSAVE 对 H 陷阱仿真，per-H 视图）——
+   HSAVE 泄露点是第一靶；挡在 H 配置自身 SVM 状态的必经之路上。
+2. **VMCB 合并重入**（H 的 VMCB + svmb 必需拦截 → 合成真 VMCB → 重入；
+   v1 只接受 NP_ENABLE=0）+ 出口反射归属判定。
+3. Stage-1 判据：NP-off 最小 VMCB 全环往返（H→L2 几条指令→出口反射回
+   H 的 VMCB→H 恢复）——嵌套版的"r158 时刻"。
+
+### 床态
+
+r165 构建（8927c47a）RUNNING（本 boot 第三次点火，重入协议稳）；
+l2test 面可用；机器健康。
+
+## Round 166 (2026-10-19): 嵌套"r158 时刻"——stage-1 全环往返一发过（VMRUN 接受→L2 执行→出口反射→H 恢复），软件嵌套 v1 落地
+
+### 判决（一发过 ×2，stage-0 回归绿 ×2，guest 活）
+
+```
+l2test s1: exc=00000000 hvmcb=147abf000 exit=72 L2rip=100000 L2rax=a5a51122
+[+] L2 s1 PASS (full round trip: VMRUN -> L2 cpuid -> exit reflected -> H resumed)
+串口三行全链:
+  nested: vmrun reject vmcbPa=140457000 (v1 contract unmet)     ← 零化 VMCB=拒绝
+  nested: accept hvmcb=147abf000 -> L2 rip=100000 rsp=110ff8 cr3=2e5f7000
+  nested: reflect exit=72 L2rip=100000 -> H rip=fffff8066d760c02 ← H 恢复于 VMRUN+3
+```
+
+四个判据全中：exc=0（无异常=接受+返回而非 #BP）、exit=0x72（L2 的 cpuid
+拦截反射）、L2rip=0x100000（fault 式出口 RIP）、L2rax=0xA5A51122（RAX
+标记经往返存活——RAX 是 SVM 唯一从 VMCB 装载的 GPR）。
+
+### v1 设计（core/nested.{h,cpp}，~150 行核心）
+
+- **软件嵌套（KVM nested-SVM 同构）**：QEMU 只看一层 SVM——接受 H 的
+  VMCB、把 L2 状态装进真 VMCB、重入；QEMU 毫不知情。
+- **骨架继承合同**：L2 只从 H 拿 Rip/Rsp/Rflags/Rax/Cr3 + 拦截位图
+  （ic1/ic2/exc OR 进真 VMCB）；segs/CR0/CR4/EFER/CPL 继承 L1（构造即
+  合法）。svmb 控制区权威不动（NCr3/NP/MSRPM 保持——L2 地址骑 svmb
+  单层 NPT）。**v1 拒绝 NP_ENABLE=1**（两级 NPT 无 TCG 支撑）。
+- **接受校验**：4K 对齐 + <1TB + NP off + 意图三元组（Rip/Rsp/Cr3/
+  Rflags 非零）——零化 VMCB（stage-0 品）自动落回 r140 #BP 拒绝语义
+  （stage-0 回归零改动全绿）。L3 尝试（嵌套中再 VMRUN）→ #GP 拒绝。
+- **反射门**（SvmbVmExitEntry，regs IN-sync 后、Dispatch 前）：
+  嵌套活跃时**一切出口反射**——出口五字段+L2 存档写进 H 的 VMCB、
+  恢复 svmb 拦截字段、save 区与 GPR 帧从 stash 还原、H 恢复于其
+  VMRUN+3（真硬件语义=HSAVE 保存的 host RIP）。模块分发永不见 L2 出口。
+- **GPR 舞步**：H 的全帧 GuestRegs + save 区在接受时 stash（per-core
+  数组——VcpuContext 布局被 asm offsets 钉死不能加字段）；反射时
+  memcpy 回 regs 帧；接受路径借 regs 回写通道（1010-1013 行）装 L2
+  的 Rip/Rsp/Rax/Rflags，省掉绕过逻辑。CleanBits 每次手改后清零。
+- **位号课**：ic1 bit18=CPUID（bit21=INTN——正是 r160 垫片占的位），
+  exit 0x72；exit↔bit 映射=ic1 bit n ↔ exit 0x60+n。
+
+### 残余（r167 候选）
+
+1. **MSR 虚拟化**：HSAVE 读泄露真 PA（protectHsave=0）；H 写
+   EFER/VM_CR/HSAVE 会砸 svmb 底座（EFER/VM_CR 已拦，HSAVE 裸奔）。
+2. 反射策略细化：目前反射一切（含 svmb 自身必管出口）；VINTR/中断
+   反射、NPF 归属判定。
+3. L2 侧多指令/多出口场景（hlt/MSR/异常注入），VMLOAD/VMSAVE 语义，
+   NRIPS=0 下反射 NRip 的手工补全。
+4. 独立 l2test.sys（外部 H）——反射面需要真实性时拆。
+
+### 床态
+
+r166 构建（3b5cf740）RUNNING；l2test 0/1 双面绿；机器健康。
+
+## Round 167 (2026-10-19): 反射面 X 光——五连出口 gauntlet 6/6 全绿；强制反射安全网堵住骨架 IDTR 泄漏；HSAVE 泄露一行收口
+
+### 判决（gauntlet ×2 + s0/s1 回归全绿，guest 活）
+
+```
+l2test s2: exc=00000000 legs=6/6 mm=0 pf=300000 mark=5a5af00d intr=0
+[+] L2 s2 PASS (gauntlet: cpuid/hlt/rdmsr/#UD/#PF all reflected, ...)
+s0: hsave=0(1)   ← 泄露收口（原 0x17c103000）
+```
+
+L2 五连出口序列各得其所：cpuid 0x72 / hlt 0x78 / rdmsr 0x7C（L2 自设
+ecx=EFER 落进 svmb 保护 MSRPM）/ **#UD 0x46（异常反射）** / **#PF 0x4E
+（ExitInfo2=0x300000 分毫不差）** / 终态 hlt + **标记存储在 L2 自身 CR3
+世界执行落地**（宿主直读 PA 见 0x5A5AF00D）。单轮 7 次 VMRUN 往返
+stash/restore 零漂移。
+
+### 修法（两项）
+
+1. **强制反射安全网**（nested.cpp 接受路径，独立于 H 申请什么）：
+   - **异常位图置全 1**：骨架继承把 L1 的 IDTR 泄给了 L2——任何原生
+     派发的 L2 异常都会带着 L2 的 CR3/RIP 跑进 Windows 内核=蓝屏。
+     全反射后异常出口一律归 H 仿真。
+   - **ic1 bit0（INTR）**：同类危害的中断面——不拦则中断直接投递进
+     L2（经 L1 IDT）。拦后待决中断出口 0x60 反射，H 重试（真
+     nested-SVM ABI）。**第一次 gauntlet 尝试野外捕获 intr=1：0x60
+     反射+H 零推进重试，干净通过**。
+2. **ProtectHsave 默认 0→1**：r165 泄露点收口——处理器语义（读=0/
+   写=丢）早就正确，只是拦截面没武装（bisect 遗留）。床面注册表无
+   显式覆盖，新默认直接生效（s0 实测 hsave=0）。
+
+### 过程两坑（皆测试品笔误，机制反被双重证明）
+
+1. 标记存 disp32 写成 `00 12 01 00`（=0x11200，应为 `00 20 11 00`=
+   0x112000）→ 存进未映射页 → #PF 反射 ExitInfo2=**0x11200 分毫不差**
+   （出口记录保真的计划外双重证明）。
+2. `48 C7 04 25+disp32+imm32` 全长 12 字节计成 11 → 期望表终态 hlt
+   差一字节（0x100021→0x100022）——mm=0x100000078 的 rip-flag 精确
+   指认。
+
+### 设计决策项（入档未决）
+
+**EFER 视图张力**：现行 MSR 面对 guest 藏 SVM（EFER 读屏蔽 SVME、
+VM_CR 强制 SVMDIS、HSAVE 读 0——反检测立场）；但"真 H"（外部
+l2test.sys / 真虚拟化栈）需要看见 SVM 才肯工作。per-H/per-context
+MSR 视图是解法方向，留到外部 H 时代决策。
+
+### 残余（r168 候选）
+
+NPF 归属判定与 L2 NPT 异常路径、VINTR 注入语义、VMLOAD/VMSAVE、
+独立 l2test.sys、NRIPS=0 下反射 NRip 手补、EFER 视图策略。
+
+### 床态
+
+r167 构建（2ca57c57 后修订版）RUNNING；l2test 0/1/2 三面全绿；机器健康。
+
+## Round 168 (2026-10-19): 反射机制完善第一刀——EVENTINJ 透传合同落地（转移级 PASS）；in-L2 注入投递=QEMU 仿真缝归档；.rdata 蓝屏与 IDT 门字节定位两课
+
+### 机制入列（全部落地 nested.{h,cpp}）
+
+1. **反射 NRip fault 类清零**（陈旧值清 0，H 手算——本地 FaultClassExit
+   镜像，hypervisor.cpp 的原函数链接不可达）。
+2. **TSC offset 两级合成**（accept 相加 H 的、reflect 还原 svmb 的）。
+3. **IDTR 覆盖合同**（H 给 L2 自建 IDT 的通道，v1.1）。
+4. **EVENTINJ 透传**：H 臂 EVENTINJ→accept 转移进真 VMCB+清 H 的 Valid
+   位（硬件消费语义）；真 VMCB 挂起 L1 事件时 **L1 优先**（r168b：
+   stash/clear/restore——挂起 L1 事件绝不能打进 L2）。
+5. **VIntr+中断影子 stash/clear/restore**（同危害类：QEMU 的
+   ctl_has_irq 在 L2 入口 VMRUN 读骨架 VIntr 会把 L1 的虚拟中断投给 L2）。
+6. **VMLOAD/VMSAVE 强拦**（ic2 bit2/3）+ #GP 拒绝处理口（原生执行会经
+   svmb 不拥有的 VMCB 改写真 save 区）。
+
+### 判决
+
+```
+[+] L2 s0/s1/s2 PASS（hsave=0，全代部署回归绿）
+[+] L2 s3 PASS ×2 (EVENTINJ transfer: armed -> transferred -> consumed)
+```
+
+s3 判据=**转移合同级**：H 臂→svmb 转移→Valid 位按硬件语义清零
+（injValid=0 实证）。**in-L2 注入投递=QEMU-TCG 仿真缝归档**：确定性
+#PF@宿主栈形 CR2（ffff9701584bafc0），而 L2 RSP 装载无恙（串口 accept
+行 rsp=111ff8；QEMU helper_vmrun RSP 装载在 eventinj 处理之前，源码
+定位 svm_helper.c:369 vs :415）；type-0（helper_vmrun 内立即投递）与
+type-4（cpu_loop_exit）两路径同死；VIntr 排除后仍在。与"无 SVM MTF"
+同类的**床保真度边界**——真机 EVENTINJ 在硬件层投递，透传合同正确。
+
+### QEMU 源码引文（本轮新证）
+
+- IDT 门属性字节=**+5**（do_interrupt64: e2=+4 双字，type=(e2>>8)&0x1f
+  ——+6 写 0x008E 与 +8 写 0x8E00 都死，正解 +4 处 u16=0x8E00）；
+  limit 检查错误码=intno*8+2（0x31 号=0x18A，本轮定位主线索）。
+- helper_vmrun 装载序：CR3@:317→idtr@:363→RIP/RSP/RAX@:367-372→
+  EVENTINJ@:415；cpu_vmexit 在 :786+ 把 guest 活动 gdtr/idtr 写回 VMCB。
+- IDTR 的 limit 在 vmcb_seg.limit（+4，u32）——svmb 自己的填法一致。
+
+### 过程课（全部入律）
+
+1. **.rdata 蓝屏 0xBE**：`*(i32*)(static const l2code+…)=rel` 写只读段
+   =内核蓝屏→guest 重启循环（TCG 慢启动把"挂死"伪装成 livelock；
+   10 个 DriverEntry 块+BugCheck 1001 铁证）。**新律：内核探针改字节
+   数组一律栈缓冲中转；"guest 挂死"先查 bugcheck 1001/串口
+   DriverEntry 计数再定性。**
+2. 串口在服务异常停止期会"死"（无输出≠无事件），重启复活——取证前
+   先验串口活着。
+3. AllocNonPaged **不清零**——判据读回页必须显式清零。
+4. 注入臂时机差一拍 + Leg 结构丢 adv 字段=cpuid 后无推进重执行循环
+   ——对照 stage-20 的带 adv 表写法。
+
+### 残余
+
+注入投递缝的更深层（QEMU 侧 push 上下文）=真机/换床验证项；
+r169=NPF 归属判定+VINTR 深水区；r170=MSR per-H 视图+独立 l2test.sys。
+
+### 床态
+
+r168 终版构建 RUNNING；l2test 0/1/2/3 四面全绿（s3 转移级）；机器健康。
+
+## Round 170 (2026-10-19): 共存故障根因二分——svmbctl/l2test/嵌套全无罪；触发=命中窗口内的会话/进程创建活动；M1 在 r168 构建无回归
+
+### 判决链
+
+1. **纯 M1 ×3 无回归**（r168 构建含 ProtectHsave=1）：
+   `HITS 20/20 LEAK 0 ×3`——r164 双满分在新构建上成立，
+   ProtectHsave 无辜。第一轮的"HITS 20 LEAK 20 假回归"=事故重启后
+   忘了重新 `mod attach debugger`（r165 意外原生路径形态重现）。
+2. **r169 原配方复现 2/2**：命中环中并发 svmbctl 链 → guest 死。
+3. **二分 A（决定性）**：命中环中只发纯 `echo` SSH 命令（无 svmbctl/
+   无 l2test/无嵌套）→ **同样致死**（第三例）。**嵌套战役侧代码全部
+   无罪**；触发成分=**M1 命中窗口内的新会话/进程创建活动**（sshd+
+   cmd+conhost 生成风暴）。对照组：纯 M1 ×3 的轮询全在窗口外=绿。
+4. 死亡形态两种：Event-41 硬重置（r169/r170-复现 1）+ **BSOD**（二分 A
+   ）；复现后一次 boot 退化 wedged-idle（hlt-emulate 风暴+多核串口
+   串写乱码=需 HMP system_reset）。
+
+### r169 串口重读（新镜头）
+
+`reinfect: enter exit=43 rip=sled+1` = HandleExceptionExit 自调的
+正常 M1 链（非默认路）；第一异常行=垃圾 PA 的 VMRUN 拒绝，其后全是
+内核脱轨风暴。l2test 从未落地（零 accept 行）——与二分 A 结论互证。
+
+## Round 171 (2026-10-19): EFER 张力正式裁决——per-H 虚拟 SVM 视图落地，注册制双视图一发过
+
+### 裁决（一发过 + 全套回归 5/5）
+
+```
+l2test s6: pre(efer=d01 hsave=0) H(efer=1000 hsave=12345000) post(efer=d01) cpuidH=1 cpuidOther=0
+[+] L2 s6 PASS (per-H view: SVME settable + own HSAVE + CPUID SVM visible; stealth restored)
+```
+
+### 设计（EFER 张力的解法=注册制双视图）
+
+- **注册判别=CR3**：注册线程的当前 CR3（=svmbctl 进程上下文）标记为
+  H；MSR/CPUID 出口按 GuestCr3 查表分流。未注册上下文维持反检测视图
+  （EFER.SVME 屏蔽、HSAVE=0、CPUID 隐 SVM）——**无全局解掩，隐身立场
+  保留**。
+- **H 视图**（nested.cpp 的 HViewSlot×4）：EFER.SVME 可读可写（虚拟
+  副本）、自有 VM_HSAVE_PA、VM_CR 无强制 SVMDIS、CPUID 不隐 SVM 位。
+  **真实 MSR 零触碰**（比旧"强制 SVME 透传"更安全——H 的写全落副本）。
+- 种子=注册时的隐身视图（SVME 清零/HSAVE 空），注册/注销即装即拆
+  （Stage 24 探针自包含闭环；真 IOCTL 注册面留给外部 l2test.sys 轮）。
+
+### 过程课
+
+- **Bash 工具的 heredoc 吃一级反斜杠**：python-heredoc 里 `\n` 落盘成
+  真换行=字符串字面量断行 C2001×3——**C 源码含转义串的手术一律用 Edit
+  工具**（r132"禁 python-heredoc 字符串手术"律的精确化）。
+- 床面恢复慢律：BSOD 后 TCG 启动+MEMORY.DUMP 写盘可达 ~10 分钟，
+  vmhealth 翻 HEALTHY 后 SSH 才通；复位后 vvfat 陈货+qauto 不跑照旧。
+
+### r172 候选
+
+独立 l2test.sys（外部 H，真 IOCTL 注册面+自编码 VMCB）或嵌套 NPT
+影子合成；M1 竞态（r170 窄靶）仍挂账待回归。
+
+### 床态
+
+r171 构建 RUNNING；l2test 0/1/2/5/6 五面全绿；机器健康。
+
+## Round 172 (2026-10-19): 嵌套 NPT 影子合成 v0——机制全落地、回归零退化；首障=QEMU 走表期 P|W|U NPF（四假设证伪，深度定性未解）
+
+### 已落地（全部在位，等一个绿灯）
+
+- 影子池（per-core）：32MB 细粒度窗口（4K 惰性合成，源自 H 嵌套表软走查）
+  嵌在 **4GB 全域 2MB 恒等大页毯**内（毯子的必然性：L2 自己的 CR3 走表
+  页是散在高 GPA 的池页，首轮即在 0x7b05c000 撞墙）。
+- 接受路径：NP 会话不再拒绝——stash 真 NCR3→Init（毯子建一次+窗口每会话
+  清零=失效策略）→ 换影子根 + **TLB_CTL_FLUSH_ALL**（r163 律）；
+  反射还原真 NCR3。门路由：NPF→合成器先行，合成失败才反射。
+- Stage 25 判据：三重表结构（L2 CR3 恒等+H 非恒等嵌套表+svmb 影子），
+  L2 跑在虚拟 GPA 0x500000，标记 0xC0DE600D。
+- **回归 5/5 绿**（s0/1/2/5/6 在影子时代构建上零退化）+ guest 活。
+
+### 首障定性（四假设全证伪，现场保留）
+
+```
+shadow: npf reflect gpa=<l2t池页> info1=200000007 rip=500000
+```
+- NPF=**bit32（guest 走表期）+P|W|U**，落点=L2 的页表页（每次跑 ASLR 式
+  变：0x7b05c/0x56ec3/0x5a50c/…全 >1GB 的池 PA）；W=QEMU 走表时的
+  guest-PTE A/D 回写。
+- 证伪链：①A/D 预置（0xE7）无效；②SMAP 假设清 US（0xE5）无效；③陈旧
+  复合假设补 TLB 全刷无效；④US=1+A/D+刷共存（从未测过的组合）仍同败。
+- 毯子链经诊断 dump 验证完好（pml4e/pdpte 全 P|RW|A 有效）；哈希逐轮
+  核对无陈弹。
+- **r173 开场动作已定**：读 QEMU 源里走表期 NPF 错误码的构造点
+  （seg_helper.c 的 mmu_translate/PTE-A/D 回写路径），确认该回写用什么
+  mmu_idx/权限向量走 NPT——错误码的 U 位指向 user-index 写路径的嫌疑。
+
+### 律与课
+
+- **非分页池物理不连续**：影子池页 VA 连续但 PA 跳跃（pml4Pa=0x15df1c000
+  vs pdptPa=0x4c01d000）——表间 PA 必须逐页 MmGetPhysicalAddress。
+- 影子换根必带 TLB 全刷（r163 律的嵌套版）。
+- r172 的 heredoc/转义坑零复发（全程 Edit/无转义手术）。
+
+### 床态
+
+r172 构建 RUNNING；l2test 0/1/2/5/6 绿、7 未绿（首障定性中）；机器健康。
+
+## Round 173 (2026-10-19): 嵌套 NPT 影子合成 v0 绿灯——QEMU 源定音 US 位+四连修（风暴/毯界/槽位错位/判据）；s7 PASS ×2 + 回归 5/5
+
+### 判决
+
+```
+[+] L2 s7 PASS ×2 (shadow v0: L2 ran on virtual GPA 0x500000 through H's non-identity nested NPT)
+全套回归 5/5 + guest 活
+```
+
+### 根因链（r172 首障的完整解）
+
+1. **P|W|U 之谜（QEMU 源定音）**：excp_helper.c `case MMU_NESTED_IDX`
+   把影表走查交给 **MMU_USER64_IDX（is_user 恒真）**；`ptw_translate`
+   对 PTE 页用 **MMU_DATA_STORE** 探测（A/D 回写能力）。r172 的诊断
+   dump 里 pml4e=0x…023 其实早已显示 **表间链接项 |0x3 缺 US 位**——
+   用户态访问 supervisor 链接项=保护违例。U 位=走表语境伪线索（四假设
+   证伪的谜底）。**修：链接项全改 |0x7。**
+2. **0x60 风暴饿死 L2**（intr=256/256）：挂起中断既进不了 L2（强制
+   INTR 反射）也送不到 L1（r142 家族 IRR 不可投递已知病）。修：**L2
+   Rflags IF=0**（中断对 L2 永不可投递→流给 L1）+ **影子窗口跨重试
+   持久化**（lastRoot 判据重置——r172 的每接受清窗让风暴期反复重合成）。
+3. **毯界**：走表页 @0x129570000=4.9GB——**PCI 洞回填把 RAM 顶上 4GB**。
+   毯子 4→8GB（错误码 0x6=P0|W|U 即"走表页不在毯内"的签名）。
+4. **ptIdx 槽位错位（真·主犯）**：PD 链接按 GPA 从 0 数槽（0x500000=
+   槽 2），合成却写 `(gpa-窗口基)>>21`=槽 0——写错表=**无限重合成环**
+   （串口 compose 行洪流+床挂死需 HMP 复位）。修：`ptIdx = gpa>>21`。
+5. 判据两笔误：hlt 在 +0xE（2+12）；imm32 符号扩展（0xC0DE600D→
+   0xFFFFFFFFC0DE600D，r169 律再犯）。
+
+### 律
+
+- **QEMU 影表走查=用户态语境**（MMU_NESTED_IDX→MMU_USER64_IDX）+ PTE
+  页以 STORE 探测——**影子全部表项（含链接）必须 P|RW|US**，否则
+  走表期 P|W|U NPF。
+- **毯必须过 4GB**（PCI 洞回填）；错误码 P0+W+U@高位 GPA=毯界签名。
+- **窗口 PT 槽位=GPA>>21**（PD 链接从零数槽）——窗口"基址"只用于
+  判界，不用于槽位算术。
+
+### 残余（v1 目标）
+
+失效精度（lastRoot 粗粒度→H 改表感知）、H 大页、perm 合成收紧
+（v0 恒等毯+permissive）、多核并发影子；M1 竞态（r170）仍挂账。
+
+### 床态
+
+r173 构建 RUNNING；l2test 0/1/2/5/6/7 六面全绿；机器健康。
+
+### r176 候选（按优先级）
+
+1. **pending-EVENTINJ 投递缝**（脱轨残余）：#BP 重注入的替代投递通道
+   （如 SWINT 自注入=DebugService2 用户态路），或投递确认+重试。
+2. **服务自停真机制**（4 例，均脱轨后）：SCM 1077 形态取证。
+3. 回主线：影子 v1（失效/权限/大页）——嵌套回归 6/6 已证修复零影响。
+
+### 床态
+
+boot G RUNNING（无武装）；嵌套回归 6/6 后机器健康；r176 开场直接可用。
+
+## Round 176 (2026-10-20 下午): 嵌套 NPT 影子合成 v1 绿灯——INVLPGA 失效合同+权限透传+2M/1G 大页+128MB 窗；s13/s14/s15 三台全绿×2+回归 6/6 零退化
+
+### 判决
+
+```
+s13 PASS ×2: INVLPGA 失效——H 重映射 mark GPA→第二帧+INVLPGA 后，L2 读到新魔数
+             （r1=1122..78 r2=8877..21 legs=3；陈旧影子会回旧帧）
+s14 PASS ×2: 权限——H-NX 页的取指 NPF 反射给 H（exit=0x400 info1=0x100000014
+             =walk+EXEC+P），H 清 NX+INVLPGA 修复后 L2 跑完全程
+s15 PASS ×2: 大页——H 单条 2M 大页覆盖 code/stack/mark（物理连续区偏移映射），
+             512 填充合成，程序跑完落标
+回归 0/1/2/5/6/7 = 6/6 PASS（v0 判据在 v1 compose 上零退化）；s7 复验绿；guest 活
+```
+
+### 实现（nested.cpp 为主，四特性）
+
+1. **INVLPGA 失效合同**：ic1 bit26（出口 0x7A）TCG 常开武装；处理器 = 宿主侧
+   原生重发 `_svmb_invlpga(RAX,ECX)`（同物理 TLB，ASID 标记——驱动自身
+   guest 语境调用透明）+ **全机窗清零**（跨核清 PT 良性竞态：清后合成=对
+   H 当前表的新走查；lastRoot=0 双保险；1G 大叶的 PDPT 链接用缓存 PA 重建，
+   免出口 IRQL 的 Mm 调用）+ 活会话核 r108 PendingTlbKick（绝跨核写 VMCB）。
+2. **权限透传**：叶项 = H 的 RW/US/NX 位**原样**（P|A|D 强制——A/D 预置杀
+   走查期 fault 风暴；r173 的 US 律只约束链接项）；**故障类别校验**——合成
+   叶仍挡本次访问（exec×NX / write×RO / user×supervisor）= H 的故障 →
+   返回 false 反射（否则无限 NPF 环）。s14 的 deny 行 `fl=8000000000000006`
+   = NX+RW+US 透传的直接可视化。
+3. **大页**：H 的 2M 大页 → 512 项填充窗口 PT 槽（窗口槽是 PT 链接不可 PS，
+   填充等价）；H 的 1G → 影子 PDPT 槽直接成大叶（GB0 拒绝=窗口所在，PD0
+   链接必须活）；512G 拒绝反射。
+4. **窗口 16→64 槽**（32→128MB，PD0 容量内）。
+
+### 判据算术两律再犯（第三次+，已入判据注释）
+
+- **r169 imm32 符号扩展律**：mov imm32 0xC0DE600D 落成 0xFFFFFFFFC0DE600D
+  （s14/s15 判据初版又踩）。
+- **hlt 出口 rip=指令自身偏移律**（非 +1）：s7 期望 0xE=偏移本身；s15 同律。
+
+### 过程课
+
+- app 侧 stage 映射块**边界必查**：`stage>=8` 块把 13-15 覆写成 26（有毒
+  stub 载体又误跑一发=服务自停第 5 例）——新映射块与旧块范围互斥
+  （8..12 vs 13..15）。
+- MmAllocateContiguousMemory 在本 WDK 是 (bytes, PHYSICAL_ADDRESS) 形；用
+  平台助手 AllocContiguous/FreeContiguous（util.cpp 现成）。
+- deploy 后 135s 处 vmhealth 常报 GUEST-HUNG 瞬态（sshd 未就绪+boot 风暴
+  忙），+60s 自愈——判决前等二查。
+
+### r177 候选
+
+1. 外部 l2test.sys（自编码 VMCB+真 IOCTL 注册面）——影子 v1 已就绪做底座；
+2. 多核并发影子（双 H 双 L2 同场）；
+3. r175 残余（pending-EVENTINJ 缝/服务自停真机制）仍挂账。
+
+### 床态
+
+s13/14/15×2 后 guest 活、机器 HEALTHY；无武装 boot；r177 开场直接可用。
+
+## Round 177 (2026-10-20 晚): 外部 H 生态开张——l2test.sys 真消费者 E2E 双绿；HVIEW 注册面（IOCTL+svmbctl hreg/hunreg）落地；外部进程语境虚拟 EFER/HSAVE 实证
+
+### 判决
+
+```
+EXT-H PASS ×2: hview reg(ok) → l2t2 RUN → exc=0 exit=78 rip=50000E
+              mark=ffffffffc0de600d legs=1 eferH=1000 hsaveH=12345000
+              → hview unreg(ok)（六判据全中）
+回归 s0/1/2/5/6/7 + s14/s15 绿；s13 本 boot 1/3 首腿 #GP(0x4D) 偶发
+（r176 boot 0/2 干净；复跑数据全对=PASS 形态；挂 r178 观察项）
+```
+
+### 交付（外部生态五件）
+
+1. **svmb 面**：SVMB_IOCTL_HVIEW（0x860）——调用者 CR3 注册/注销 H 视图
+   （r171 双视图的真 IOCTL 入口）；svmbctl `hreg`/`hunreg` 动词。
+2. **tests/l2test/**（新目录）：l2test.sys（外部内核驱动=H：自建 VMCB+
+   嵌套 NPT+L2 表+cpuid/mov/hlt 程序，从自有进程语境 __svm_vmrun；虚拟
+   EFER.SVME/HSAVE 写读=H 视图活性的外部实证）+ l2load.exe（用户装载器：
+   注册→RUN→注销全编排+六项判据）+ l2test.vcxproj（svmb 骨架克隆）+
+   build/_l2test_build.bat。
+3. **外部驱动 VMRUN 全链**：装载器进程 CR3 注册 → l2test.sys 的 ioctl
+   处理器（同进程语境）VMRUN → svmb 接受（软件嵌套）→ L2 过影子跑完 →
+   出口反射回外部 H → cpuid 腿处理 → 终态 hlt → 注销回隐身。
+
+### 新床律
+
+- **完全无签 .sys 本床拒绝加载**（testsigning+nointegritychecks 也不放行）
+  ——l2test.vcxproj 用 `SignMode=TestSign`（WDK 自动 WDKTestCert，guest
+  已信任该根；svmb.sys 即此路）。host 侧 Get-AuthenticodeSignature 显示
+  UnknownError=host 缺链，guest 侧 Valid 才是真值。
+- build/svmb_test.pfx 已不存在（build_debug 的 signtool 行长期静默失败）
+  ——外部工件签名走 WDK TestSign，不走 pfx。
+- MSYS 吃 signtool 单斜杠旗标（/fd→路径）+ 引号 heredoc 也吃一级反斜杠
+  （本役四犯：C 串手术一律 Edit 工具）。
+- sc 加载中的驱动文件锁定：push 前必 sc stop。
+- `__svm_vmrun` 参数=size_t 全 64 位 PA——截断成 u32 会拿低半地址当
+  VMCB（reject "v1 contract unmet" 的一个新形态）。
+- 最小 WDM 设备的 CREATE/CLOSE 必须回 SUCCESS（否则 CreateFile err 1）。
+
+### 残余/观察项
+
+- **s13 首腿 #GP(0x4D) 偶发**（本 boot 1/3）：疑外部 H 会话后的 pending
+  事件残留竞态（r167 强反射安全网把 L2 异常全反射，H 助手遇非预期出口
+  即 bail）——r178 观察项：连续跑 s13 ×10 定发生率+串口定性。
+- r175 残余（pending-EVENTINJ 缝+服务自停）仍挂账。
+
+### 床态
+
+EXT-H 双绿+回归绿后 guest 活；l2test 服务留在床上（已停止态）；
+r178 开场直接可用。
+
+## Round 178 (2026-10-20 深夜): s13 首腿 #GP 破案与修复——池 LIFO 复用→同根 PA→陈旧影子窗口跨测试存活；修=世界键扩二元组+H 拆卸 INVLPGA；锤 20/20
+
+### 机制（串口指纹定罪）
+
+```
+失败腿：accept →【缺 code 页(0x500000) 的 compose】→ compose gpa=511ff8（RSP 事件帧压栈）
+        → reflect exit=4d L2rip=500004（指令中段=垃圾解码）
+```
+前一个测试（s25）释放的页被非分页池 LIFO 复用 → 新世界（s27）的 H-NPT 根拿到
+**同一物理根地址** → lastRoot 相等 → r173 的窗口持久化判据误判"同世界重试"
+→ L2 首取指吃到 s25 旧已释放页的陈旧合成 → 执行垃圾 → #GP（r167 异常位图
+全 1 → 出口 0x4D）。偶发性 = 池复用的落位模式。
+
+### 修复（双层）
+
+1. **svmb**：影子世界键从 lastRoot 单值扩成 **（H-NPT 根 PA + H vmcb PA）
+   二元组**（两者任一变 = 新世界 = 清窗；ShadowPool.lastVmcb）。
+2. **测试侧（H 语义正解）**：拆卸时 INVLPGA——stages 25/27/28/29 + 外部
+   l2test.sys 各补一发 `_svmb_invlpga(0,1)`（真 hypervisor 拆卸必做的
+   失效，合同由 r176 的 NestedInvlpgaExit 承接）。
+
+### 判决
+
+```
+s7→s13 复现序列 ×10 = 20/20 PASS（修复前同序列 1/3 失败）
+EXT-H PASS（修复构建复验）；回归 s0/1/2/5/6/14/15 全绿；guest 活
+```
+
+### 床律入档
+
+- **非分页池 LIFO 复用律（影子世代）**：free-then-alloc 序列会拿回同址
+  页——任何"地址=世界身份"的缓存判据在跨 free/alloc 边界时都可能误判；
+  键要加宽 + 语义正解（拆卸 INVLPGA）双保险。
+- 失败腿指纹：accept 后缺首个 code 页 compose + 出现栈页 compose（事件帧
+  压栈）+ 指令中段 RIP = "陈旧窗口喂垃圾"三特征。
+
+### 床态
+
+锤+回归后 guest 活、HEALTHY；r179 候选=多核并发影子 / r175 残余。
+
+## Round 179 (2026-10-20 深夜②): 多核并发影子绿灯——s16（4 H 世界×4 核×50 轮共发，同一 GPA 落四帧）双 boot 验证；全回归绿；服务自停第 6 例挂 r180 首靶
+
+### 判决
+
+```
+s16 PASS ×2 boot: okMask=0xF rounds=200（4 核各 50 轮全中自有魔数）
+  串口：core=0..3 rounds=50 mark=5ac0/1/2/30000 ok=1 全行
+  交织证据：accept 窗口 4 个互异 hvmcb PA 交错
+新 boot 补跑 s13/s14/s15 全 PASS + s0-s7 回归绿 + guest 活
+```
+
+### 实现（stage 30 / svmbctl l2test 16）
+
+文件域 McThreadFn（PsCreateSystemThread×4，各自 KeSetSystemAffinityThread
+钉核 0-3，共享 NotificationEvent 栅栏同放）：每线程=独立 H 世界（12 页：
+VMCB/嵌套 NPT/L2 表/code/stack/mark），50 轮 L2 往返（cpuid 腿+终态 hlt+
+mark==自有魔数），拆卸 INVLPGA（r178 律）。编排块 30s/线程超时汇合收割
+okMask。魔数 0x5AC0xxxx（正 imm32 无符号扩展之虞）。
+
+### 观察与残余
+
+- **多核串写串口交织**：并发 LOGI 的直写 COM1 无锁——行内容交错（显示
+  伪影，非数据问题；与 r169 乱码律同源）。
+- **服务自停第 6 例**：s16 后跑 s13 中途机器劣化（sshd 死、串口停在
+  accept 后）→ 自愈 → 服务 STOPPED。与 r175 残余同族；多核负载疑似
+  加剧（4 会话×pending 事件面变大）——**r180 首靶**：pending-EVENTINJ
+  投递缝+服务自停真机制（现已是单 boot 长测试序列的最大障碍）。
+- 本 boot 曾按规程 sc stop→推 sys→sc start 复活成功（重入规程有效）。
+
+### 床态
+
+新 boot RUNNING、s13-s16 全绿后 guest 活；r180 开场直接可用。
+
+
+## Round 180 (2026-10-20 晚): "服务自停"悬案正式闭环——六例全部=无声硬重置（1077 指纹+boot 计数对账）；r169 悬案与 r175 六例并轨为"脱轨→重置尾部风险"；复现尝试 3/3 干净
+
+### 破案链
+
+1. **回溯事件日志**：今日 Event-41/6008 对=deploy 硬杀伪影；但 **6005（每
+   boot 一条）计数 12:00-14:38 共 12 次 boot vs 同期 deploy 仅 5 次** =
+   **7 次无声自重置**。
+2. **铁证指纹**：case 4 的 `WIN32_EXIT_CODE 1077`（ERROR_SERVICE_NEVER_
+   STARTED"本次 boot 从未启动"）——boot 内启动后停下的服务绝不会给
+   1077；1077=我们 sc start 之后机器重开过。当时（r175）漏读了含义。
+3. **并轨判决**：r169"服务静默自停之谜"+r175 六例+案例 6 = **一家**：
+   pending-EVENTINJ 脱轨的尾部升级=guest 三重故障硬重置（QEMU 存活、
+   guest 静默重启、demand-start 服务没起、看到的就是"自停"）。排查律：
+   **`sc query` 见 1077 → 先查 uptime/6005，别当 in-boot 自停查**。
+
+### 复现尝试（当前修复面下的尾部率）
+
+case-6 配方（s16 多核→s13）×3 迭代：**6/6 测试 PASS、服务全程 RUNNING、
+boot 时间戳稳定**——低率尾部（结合 r175 spawn ×2 存活：单次触发概率
+<10% 量级）。r179 案 6 为多核负载后的一次命中。
+
+### 账本更新
+
+- ~~服务自停真机制~~ → **已解**（无声重置；机制归宿=pending-EVENTINJ
+  投递缝的脱轨尾部）。
+- 剩余真账：①pending-EVENTINJ 投递缝本体（QEMU 异常型 EVENTINJ 投递在
+  调度churn 下的偶发失败→脱轨；修向=替代投递通道或投递确认，涉 QEMU
+  语义深水区，真机不走此路=低优先）；②真机移植（等条件）。
+- 观测律：判长序列时每步 l2test 的 IOCTL 存活本身就是重置探测器
+  （reset→`\.\svmb` err 2）。
+
+### 床态
+
+三迭代后 RUNNING、boot 稳定（14:37:48 起）、机器健康；r181 开场可用。
+
+## Round 181 (2026-10-20 夜): 第三方 H 行为记录/分析模块（vlog）落地——accept/reflect/compose/intent/inject/ctrl 六类记录+IOCTL 面+svmbctl 解码分析；顺带两破案：窗口扩张吃毯（走表位恒等回填修）与外部驱动 ic1 偏移误武装
+
+### 判决
+
+```
+vlog 叙事（EXT-H 真第三方驱动跑完后的 dump）：
+  #1 ACCEPT  hvmcb=1e085000 rip=500000 cr3=32a8d000 np=1
+  #2   H intercepts ic1=00040000: CPUID          ← 第三方意图（解码命名）
+  #3 COMPOSE gpa=500000 -> 62087000 perms=67     ← 它的 L2 内存映射操作
+  #4 REFLECT CPUID rip=500000                    ← 它的 L2 出口（它处理）
+  #5 ACCEPT rip=500002                           ← 它的推进+重入
+  #6 COMPOSE gpa=513000 -> 2f48b000
+  #7 REFLECT HLT rip=50000e                      ← 终态
+stats 面：六类计数+top 出口直方图（CPUID/HLT 解码名）；dump/stats/mask/reset 四动词
+回归 s0-s7+s13-s16 = 10/10 全绿 + EXT-H PASS + guest 活
+```
+
+### 实现
+
+- **core/vlog.{h,cpp}**：8192×48B 自旋锁环（非分页 384KB）；VlogAccept 内部
+  对 H 控制面逐 accept 差分 → INTENT（拦截位图变化）/HINJ（它给 L2 武装的
+  注入）/HCTRL（嵌套 NCR3/TSC 偏移切换）；VlogReflect（它的 L2 每个出口+
+  直方图）；VlogCompose（它 nested NPT 的映射意图，含 lvl3=走表恒等回填）。
+  无嵌套会话时零成本。DriverEntry Init/Unload Deinit。
+- **挂点**：accept（stash 后）、NestedReflect（出口快照后）、compose 三路径。
+- **IOCTL SVMB_IOCTL_VLOG(0x870)**：op0 读（drain，仅读消耗）/1 stats/2 mask/
+  3 reset；SVMB_VLOG_OUT 头+记录数组。
+- **svmbctl**：`vlog stats|dump[n]|mask|reset` + 解码层（出口名/ic1 位名/
+  意图/注入/控制变更的中文叙事打印）。
+
+### 顺带两破案（记录器首跑就抓到）
+
+1. **窗口扩张吃毯（r176 遗留缺陷）**：窗口 16→64 槽把 r172 恒等毯本来覆盖
+   的走表 GPA 区（32-128MB）吃进空 PT——L2 走表页落窗内即首取指断（EXT-H
+   偶发 FAIL 的根因，r176 时代测试绿=池落位运气）。修：**走表位 NPF（bit32/33）
+   × H 无映射 → 恒等回填合成**（毯语义窗内恢复；非走表 !P 仍反射=H 的账）。
+2. **外部驱动 ic1 偏移误武装**：VMCB 布局 ic1=+0x0C（0x00=CR 读字）；l2test.c
+   与 stage30 曾把 CPUID 位写到 0x00（实际武装 CR14 读）——EXT-H 一直靠
+   svmb 基线 CPUID 拦截碰巧跑绿。vlog 的 intent 记录当场揭穿（ic1 读回 0）。
+
+### 新床律
+
+- VMCB 控制区布局：0x00 CR 读(16b)/0x02 CR 写/0x04 DR 读/0x06 DR 写/
+  **0x08 异常位图/0x0C ic1**/0x10 ic2——裸偏移手术必对 vmcb.h 结构体。
+- vlog stats 的 KindCount 是终身计数（drain 不清零）——reset 才清。
+
+### 床态
+
+10/10 回归+EXT-H 绿后 guest 活；vlog 面常开（零成本）；r182 开场可用。
+
+## Round 182 (2026-10-20 深夜③): VMLOAD/VMSAVE 仿真落地——the reference hypervisor 形态 H 解锁；s17（vmload→vmrun→vmsave/vmload host 三段式循环）一发过；两硬课（EFER 保全+段集填充）；回归绿
+
+### 判决
+
+```
+s17 PASS: exc=0 legs=1 exit=78 mark=ffffffffc0de600d cs=1
+        （vmload 前置×N + vmsave/vmload-host 出口循环×N 全程活；
+         cs 回拷校验=VMSAVE 反向数据正确）
+回归 s0/s2/s5-s16 全绿 + EXT-H PASS；s1 一发 0x60 概率病（复跑 2/3 绿，
+r142 IRR 家族，非仿真回归）；guest 活
+```
+
+### 实现
+
+- **ic2 武装**：VMLOAD|VMSAVE 位入基线（此前仅 VMRUN）——外来 vmload 的
+  原生执行会经非自有 VMCB 改写真实 save 区（r168 危害），现在全走仿真。
+- **NestedVmloadExit 重写为仿真**（r168 #GP 拒绝退役）：VMLOAD(RAX)=H 的
+  VMCB 段集（ES..Gs/GDTR/LDTR/IDTR/TR）+CPL 拷入真 save 区；VMSAVE=反向。
+  **EFER 保全硬修**：H 的 EFER 位随拷但 LME/LMA/NXE/SVME 四架构关键位
+  永不随 H 覆盖（零化/残缺的 H VMCB 不得剥掉长模式——首跑即被此咬死：
+  QEMU 进程直接亡=BENCH-DOWN 最烈形态）。
+- **stage 31（s17）**：the reference hypervisor 的 SVM_asm.asm 三段式复刻——host 捕获
+  vmsave → 循环{vmload guest → vmrun → vmsave guest → vmload host →
+  处理}。**段集填充硬课**：guest VMCB 必须带有效段（the reference hypervisor 里有捕获的
+  Windows 段；零页 vmload=CS=0 起跑=楔死）——stage 从 host 捕获拷段。
+
+### the reference hypervisor 兼容清单更新（r181 评估 → r182 后）
+
+- ~~VMLOAD/VMSAVE 硬门~~ → **已解**（仿真过 s17 全链）。
+- 剩余：NPT 钩 >128MB 作用域（窗口扩全 RAM ≈ 半轮）、MSRPM per-MSR
+  不透传、CLGI/STGI 小件、它的 .sln 实编上机（r183 候选）。
+
+### 床律入档
+
+- **vmload/vmsave 仿真的两条不变量**：EFER 四关键位保全 + 输入 VMCB 必须
+  自带有效段集（真 H 都满足；测试台必须显式填）。
+- s17 形态判据：cs 回拷校验（vmsave 后 guest VMCB 的 CS==host 捕获的
+  CS）= 反向数据流的确定性判据。
+
+### 床态
+
+回归绿后 guest 活；r183 候选=the reference hypervisor 实编实跑（其 .sln + xed 依赖）或
+窗口扩全 RAM。
+
+## Round 183 (2026-10-20 深夜④): 钩槽物化（全 RAM 影子）机器落地——**门控默认关**；机制半证（扫描/物化/钩项内容全验证）+两开放缺陷立 r184 靶；门关=回归零退化
+
+### 落地（gated）
+
+- **机制**：H 的 NPT 结构即其意图——它分裂成 PT 的 2MB 槽=钩区（the reference hypervisor
+  形态）。accept/INVLPGA 时扫 H 的表（脏标记去重：根变/INVLPGA 才扫），
+  给每个 H 分裂槽物化一个预分配池 PT（512 项从 H 的 PT 逐项翻译，perms
+  律同 compose），影子 PD 链接换下该槽的毯——**钩生效；其余 RAM 仍走
+  2M 毯零故障**。INVLPGA=H"表变了"信号→去物化+全活会话重扫（the reference hypervisor
+  编辑后必 INVLPGA 的模式）。池 64 槽/核预分配（无出口期分配失败面）。
+- **门**：`svmbHookScanEnable`（默认 **0**）——s32 用 Iterations bit12
+  开关。**门关=accept 路径与 r182 逐字节等价**（本次回归实证）。
+
+### 半证（闸门开时的三数据点）
+
+- 扫描+物化正确开火（`scan hooks materialized=1`，窗外 slot 2403/2771/2979）；
+- **钩项内容正确**（vlog lvl=4 诊断记录：gpa→markH1Pa 逐位对）；
+- 测试台自身两 bug 被诊断链揪出并修（L2 程序 disp32 手滑 0x51F000≠
+  0x5F0000=CR2 直接指认；code/stack 的跨槽 PT 索引冲撞——毯本就覆盖，
+  两行多余且有害）。
+
+### 两开放缺陷（r184 首靶，门控的存在理由）
+
+1. **活序列二扫楔死**：s18 腿 2 的 INVLPGA→重扫→下次 accept 内挂
+   （串口签名：`invlpga → wiped+rescanned → exit trace code=80 → 无
+   accept 行`——楔点在 accept 路径的二扫内）。
+2. **开闸 destabilize**：门开时 s7 中途机器亡（r180 无声重置族形态）。
+   两缺陷疑同根（二扫的某条路径在特定时序下破坏会话状态）。
+
+### 判决
+
+```
+门关：s0-s6+s16+s17 关键面绿 + ALIVE（与 r182 等价实证）
+门开：s18 未绿（两缺陷上）——机制三数据点半证
+```
+
+### r184 靶单
+
+1. 二扫楔点根因（活 accept 内的 ShadowScanHooks 路径——疑点：Dematerialize
+   改 PD 与在跑 L2 的 TLB 竞态/缺 PendingTlbKick；或 MapGuestPage 在特定
+   页上）。2. 开闸 s7 死。3. 修后开门 s18 判决+全回归。4. 然后 the reference hypervisor
+   实编实跑（r185）。
+
+### 床态
+
+门控构建 RUNNING；关键面绿；guest 活。
+
+## Round 184 (2026-10-20 深夜⑤): 二扫两缺陷根除——三重构（扫描后置/自核扫描/物化冲刷）+闸位补线；**s18 全 RAM 钧端到端 PASS**；全回归 11/11
+
+### 根因与修法（一次重构灭一类，不逐个追）
+
+1. **排序错**（两缺陷共因之一）：r183 把扫描插在 accept 的 Init 之前——
+   首扫成果被 Init 的换世界清窗抹掉、scanDirty 遗留 1 每次 accept 重扫。
+   修=扫描移到 NP 换根**之后**（ShadowScanHooks 返回是否物化，accept
+   据此对真 VMCB 补 `TlbControl=FLUSH_ALL`——重物化的 PD 链接换毯不被
+   陈旧 2M 毯翻译遮蔽）。
+2. **跨核活池变更**（r108 律违反）：INVLPGA 处理器内联重扫其他活会话核
+   的池——那些核的 L2 正拿该池当 NPT 根。修=**删内联跨核重扫**；各核
+   在自己的下一个 accept 自扫（accept=该核 L2 确定未跑的唯一安全点）。
+3. **闸位断线**：app 的 s18 从未置 Iterations bit12——闸一直关着
+   （r1/r2=MAGIC_ID=毯恒等直读的诊断指纹）。修=app 补一行。
+
+### 判决
+
+```
+s18 PASS: r1=aaaa2222aaaa2222 r2=bbbb3333bbbb3333 legs=2 slot=2631 inWin=0
+        （窗外 2MB 槽的钩经物化 PT 伺服 + H 重映射+INVLPGA 后重扫伺服新帧）
+开闸杀手 s7/s16/s17 绿（s7 死已灭）；全回归 s0-s7+s13-s18 = 11/11 绿 + ALIVE
+```
+
+### 至此 the reference hypervisor 嵌套清单终态
+
+| 项 | 状态 |
+|---|---|
+| VMLOAD/VMSAVE | ✅ r182 仿真 |
+| 出口合同/EFER/HSAVE | ✅ 同构/H-view |
+| **NPT 钩全 RAM 生效** | ✅ **r184（本轮）** |
+| MSRPM per-MSR / CLGI·STGI | 小件未做（可跑不碍） |
+| the reference hypervisor 实编实跑 | r185（机制面已全就绪） |
+
+### 床律
+
+- **跨核池/影子变更一律自核化**：任何对 per-core 影子池的写只允许发生在
+  该核自己的 accept（L2 确定未跑）；跨核信号只传 scanDirty+kick。
+- 闸门类特性的**端到端链路必须一口气验**（driver 位+app 位+默认值三点，
+  r184 的闸位断线=r183 只验了 driver 侧）。
+
+### 床态
+
+r184 构建 RUNNING；11/11+ALIVE；r185=the reference hypervisor 实编实跑（.sln+xed 构建、
+部署、hreg、加载、vlog 全程记录）。
+
+## Round 185 (2026-10-20): the reference hypervisor 实编实跑——嵌套发射成功 + 两条新床律 + 一个精确定位的反射门 bug
+
+### 现象
+
+- the reference hypervisor（Amd-V-ReloadDbg，第三方 AMD-V 虚拟化驱动）在 QEMU TCG 床上
+  `NtLoadDriver` 一发返回 **0xC000009A (STATUS_INSUFFICIENT_RESOURCES)**
+  ——机器不蓝屏、com1 零增长、svmb HEALTHY。
+- 修复后真弹加载：**嵌套发射全链路点亮**（vmload 仿真→ACCEPT→L2 自举→
+  INTR 反射→H 离场 vmsave/vmload(host)），随后机器楔死（GUEST-HUNG，
+  sshd 死、CPU 忙转、调度器自旋）。**干净血统（全新 QEMU）上逐字节复现
+  同一五步叙事**——确定性 bug。
+
+### 与参考的对比 / 破案链
+
+1. **0xC000009A 真身**：the reference hypervisor `SVMManager::Init` 的默认状态就是
+   INSUFFICIENT_RESOURCES——不是分配失败，是 `CheckSVM()` 没过
+   （vendor/8000_0001.SVM/VM_CR.SVMDIS/8000_000A.NPT 四关）。
+2. **l2test 探针实证（r185 新探针）**：DriverEntry 里加
+   `ProbeFill`（cr3/pid/vendor/svm/npt/vmcr 六元组）+ 新 IOCTL 0x901：
+   ```
+   entry: cr3=1aa000     pid=4    svm=0 npt=0 vmcr=0x10(SVMDIS)  ← 隐身面
+   ioctl: cr3=<loader>   pid=xxxx svm=1 npt=1 vmcr=0             ← H 视图完美
+   ```
+   **NtLoadDriver 把 DriverEntry marshal 到 System 进程（pid=4）执行**——
+   the reference hypervisor 全部 SVM 敏感读发生在 System CR3，而 hreg 注册的是 loader CR3，
+   罩不住 → CheckSVM 见隐身面 → 默认状态。r177 从未踩到（l2test 的 SVM
+   操作全在 IOCTL 时的 loader 上下文）。
+3. **修复**：`SVMB_HVIEW_CTL` 加 `Pid` 字段（0=自身；非 0=注册该 pid 的
+   CR3，走 r133 `Cr3M4PidToCr3` 解析）；r185load 加载前双注册
+   （self + pid4）。修后 entry 行 svm=1 npt=1 vmcr=0——四关全开。
+4. **binPath 三查律当场应验（本轮最大弯路）**：三连部署后探针/仪器全部
+   "成功但无输出"——`sc qc svmb` 揭晓：**服务 ImagePath=
+   `\??\C:\Windows\System32\drivers\svmb.sys`**，我推的
+   `C:\svmb\svmb.sys` 根本没人加载；哈希校验一直在对"推送目标 vs 本地
+   构建"（双双为新），服务读的是第三个文件。教训：**哈希必须对
+   binPath 指向的那个文件做**，不是对"我刚推的文件"做。
+5. **真弹楔死叙事（com1 五步，两次运行逐字节一致）**：
+   ```
+   R185HREG slot=0 cr3=<loader>          ← 自身
+   R185HREG slot=1 cr3=00000000001aa000  ← pid4 精确命中 entry CR3
+   nested: vmload emulated pa=<guestVmcb>   ← r182 仿真接住发射汇编(asm:257)
+   nested: accept hvmcb=… -> L2 rip=<post-vmrun> cr3=1aa000   ← 自举式接受
+   nested: reflect exit=60 L2rip=… -> H rip=…152c   ← INTR 在 L2 首指令即达
+   nested: vmsave emulated pa=<guestVmcb>
+   nested: vmload emulated pa=<hostVmcb>  ← the reference hypervisor 走离场路径，随后楔死
+   ```
+   QMP 尸检：6 核 EFER=0xd01（SVME=0，嵌套会话已清）、内核在动（调度器
+   代码 + `btl $0xc, +0x300` 自旋）、sshd 死、com1 冻结——r174 家族
+   "活着但服务死"形态。core0 完整走完、core1 无 accept。
+6. **r186 头号假说（反射门）**：exit 0x60(INTR) 是**我们自己**为虚拟化
+   中断武装的拦截——the reference hypervisor 的 VMCB 只武装了 CPUID|RDMSR/WRMSR|VMRUN，
+   根本没要 INTR。反射门没有按 **H 的武装意图**过滤：H 收到它没点的菜
+   （exit 60 at 首指令）→ 走通用离场 → teardown 楔死。修法=反射前查
+   H 的 ic1/ic2/exc 意图，H 没武的出口自己消化（INTR 应自己注入 L2）。
+
+### 修复尝试
+
+| 改动 | commit | 结果 |
+|---|---|---|
+| the reference hypervisor 实编（.sys+R3.exe，v143→v145 覆盖；xed vendor 库） | r185 | ✅ 双绿，测试签名与 svmb 同证 |
+| r185load（hreg 自注册 + NtLoadDriver + YCData 探活锚点） | r185 | ✅ |
+| HVIEW Pid 注册 + l2test DriverEntry 探针 | r185 | ✅ CheckSVM 四关开 |
+| （挂账）反射门按 H 意图过滤 | r186 | 楔死复现 2/2，假说锋利 |
+
+### 关键决策回顾
+
+| 当时以为 | 真因 |
+|---|---|
+| 0xC000009A=内存/分配失败 | CheckSVM 默认状态（catch-all） |
+| DriverEntry 在 loader 进程上下文 | **NtLoadDriver marshal 到 System(pid4)** |
+| 推送+哈希一致=部署成功 | **binPath 指向第三个文件**（System32\drivers） |
+| 仪器不打印=通道问题 | 跑的一直是旧镜像（binPath 律） |
+| the reference hypervisor 楔死=床态退化 | 干净血统同样楔（真 bug）；但 **s16 楔死确实另是床态** |
+
+### 床律（新）
+
+- **DriverEntry=System 上下文律**：`NtLoadDriver` 从用户态调用，
+  DriverEntry 仍在 System(pid4) CR3 执行。任何"加载时检查 SVM"的第三方
+  驱动需要 `hreg 4`（HVIEW Pid 注册）+ loader 自身 hreg 双注册。
+- **binPath 哈希律**：部署三查的哈希必须对 `sc qc` 的 ImagePath 文件做；
+  svmb 床真路径=`C:\Windows\System32\drivers\svmb.sys`（C:\svmb\ 只是
+  摆渡站）。
+- **reset 血统律**：QEMU 进程内 `system_reset` 血统的床对 s16（多核并发
+  嵌套）不可信——r184/r185 构建同楔，全新 QEMU（deploy.bat）同构建全绿
+  （okMask=f, 200 往返）。判绿必须全新 QEMU 进程。
+
+### TODO（r186）
+
+1. 反射门：反射前对照 H 的 ic1/ic2/exc 意图位；H 没武的出口自消化
+   （INTR→自注入 L2），不再打扰 H。
+2. the reference hypervisor 真弹复跑：期待第一核走完后续 INTR 不再离场、core1..5 依次
+   accept、NtLoadDriver 返回、YCData 锚点 OPEN。
+3. vlog 全程记录其虚拟化行为（IOCTL 0x800 符号注入可后置）。
+
+## Round 186+r187 (2026-10-20 深夜): 反射门意图过滤——六核全接+全 RAM 影子实况，四层连环修复
+
+### 现象与逐层破案（四连环）
+
+1. **r186a 落穿冻机**：意图门首版把无序出口落穿到 L1 分发管线——s2 第四腿
+   （rdmsr 后）整机冻结。QMP：6 核同 RIP（nt 冻结等待环）。**教训：L1 管线
+   的后分发机械（r53 视图发布/TLB 模式/r143 中断修复）全是 L1 语义，L2 出口
+   落穿=雷区。**
+2. **r186b 封闭自服务**：无序出口走封闭迷你分发（HLT 打盹+退休 / CPUID·RDMSR
+   透传 / 其余保守反射），不碰 L1 管线。s2 不再冻机但 **ud2 腿输出 0x7F
+   （SVM_EXIT_SHUTDOWN）**——#UD 没被拦截、经骨架 IDT 在玩具 CR3 上派发→
+   连环异常→三重故障。
+3. **r186c 反射回染**：根因=反射的 `h->Save = l2Save` 全量回拷把**骨架 IDTR
+   污染进 H 的 VMCB**——第二次 accept 起 `Idtr≠0` → OwnIdt 误判 1 → 异常
+   位图取 H 的 0 → #UD 原生派发。**修：判据改语境判据 `h->Save.Cr3 ==
+   HSave.Cr3`（in-place 自举=两侧同 CR3，天然免疫回染；玩具世界 CR3 必异）。**
+   s2 全 gauntlet 绿；回归 11/11 绿（含 s16/s18，全新 QEMU）。
+4. **r187 bit21 复活**：the reference hypervisor 真弹六核全接（ownIdt=1, hi1=10040000,
+   hexc=8——它自武 #BP）、影子合成器实况伺服整机页表走查，但 L2 内核软中断
+   位点撞 exit 0x75 → 反射 → the reference hypervisor default 分支 `__debugbreak` →
+   **FAST_FAIL_INCORRECT_STACK (0x139)**（minidump 定罪：栈底
+   AmdVReloadDbg+a3dd → KiBreakpointTrap → int 29h；起源 RIP=SWINT+3）。
+   bit21 为何屡清不掉：**r175 重武装不变量条件=(exc 含 BP 位 + bit21==0)——
+   the reference hypervisor 的 hexc=0x8 使条件永真，每次出口入口都把 accept 清掉的 bit21 恢复
+   回去**。修：重武装块加 `!NestedActive` 门。修后 **SWINT 反射绝迹**。
+
+### 战果（the reference hypervisor 嵌套运行状态演进）
+
+| 轮 | 状态 |
+|---|---|
+| r185 | core0 单核走完 accept→reflect→离场即楔 |
+| r186c | **六核全接**+影子合成实况（Windows 整机页表走查经我们影子）|
+| r187 | + SWINT 类灭绝；残余=无签名活锁（无 bugcheck、无 dump、compose 中途冻结）|
+
+### 床律（新）
+
+- **无序 L2 出口三禁**：禁反射给真 H（the reference hypervisor default=KeBugCheck/int3）、
+  禁落穿 L1 管线（s2 冻机）、禁全量信任 H.VMCB 的 IDTR（反射回染）。
+- **语境判据律**：区分玩具/in-place 看 CR3 等价性，不看 IDTR（回染）。
+- **重武装不变量须嵌套豁免**：r175 型 per-entry 恢复机械对 L2 会话无条件跳过。
+- the reference hypervisor 实测武装面：ic1={CPUID,RDMSR}、hexc={#BP}、ic2={VMRUN}、NP on。
+
+### TODO（r187 续）
+
+1. 无签名活锁定性：QMP 全核画像+（若有）dump；疑反射往返饿死或 L2 内部死锁。
+2. 活锁解后：NtLoadDriver 返回+YCData 锚点+vlog 全程行为记录（r185 收尾）。
+
+## Round 187 续（2026-10-20 夜末）: 无签名活锁定性——IPI 会合自死锁 + MWAIT 药方 + 心跳仪
+
+### 定性证据链（同二进制重放+升级取证）
+
+1. **20 分钟观察器**：com1 零增长——"龟速转储"假设死刑，真活锁。
+2. **QMP 冻结环反汇编**：CR8(TPR) 写+call+sti 循环=IPI 会合握手代码（非
+   bugcheck 转储爬行）。
+3. **info lapic 金标**：**ISR=0x209 在服务 + IRR=0x209 再排队**——核冻在
+   IPI 冻结处理器里永不 EOI（KiFreezeExecution 语义）=真冻结进行中、
+   永不完成。
+4. **心跳仪（2^16 出口/线）零触发**：楔死时全机出口总数<65k——冻结在
+   嵌套启动后数秒内、最后一条日志=影子合成；且**无任何核处于 hlt/mwait
+   自服务轮询环**（否则 10kHz 出口必触发心跳）=空闲核没在停车，六核都
+   在会合里忙等。
+5. **与 r186e 的 0x139 区分**：那次=fast-fail bugcheck（有 dump）；这次=
+   无 bugcheck 无 dump 的 IPI 会合死锁（完成谓词依赖被冻结核的状态=
+   自死锁）。
+
+### r187b 落地（保留项）
+
+- **MWAIT 武装+自服务**（ic2 bit11→exit 0x8B→打盹+重试=轮询等待）：床 CPU
+  model=max 广告 MONITOR/MWAIT，原生 mwait=TCG vCPU 停车=停车核永不取
+  IRR（r142 家族）。构造正确性修复（本轮楔死非它引起，但它是已知雷）。
+- **出口心跳仪**：每核每 2^16 出口打一行 com1（门控零依赖 LogSerialTraceF），
+  携末次出口码=楔点证人。2^20 阈值初版在楔死前不可达——已降 2^16。
+
+### TODO（r188）
+
+1. **会合自死锁破案**：候选=KeBugCheckEx 的冻结阶段死在转储首故障（转储
+   路径作为 L2 走影子=每页 NPF→合成→若合成路径与冻结核交叉持锁=环死锁）
+   ——首查最后合成行之后的锁面（vlog 环锁=每出口路径的全局锁，头号嫌疑）。
+2. 心跳仪在健康嵌套段的基线标定（正常退出频率下 2^16 的节拍）。
+3. 修后：NtLoadDriver 返回+YCData 锚+vlog 全程=r185 终答卷。
+
+## Round 188 (2026-10-20 凌晨): 冻结五连修——影子无罪+判据进化到粘性闩，真凶锁定嵌套中断投递
+
+### 五连修与判决
+
+1. **vlog 环锁 try-lock 化**（skip-on-contention+丢弃计数）：出口路径唯一
+   跨核自旋点消除——冻结原样（锁非根因，但修复保留=严格更优）。
+2. **MWAIT 轮询自服务**（r187b 已落）+**心跳仪 2^16**：真弹零心跳=冻结时
+   全机出口总数<65k、无核在 hlt/mwait 轮询环。
+3. **影子关闭对照二分**（临时 hack 后回退）：**同冻→影子无罪**！但暴露
+   另一死亡：the reference hypervisor 接住用户线程（rip=用户态 cr3=用户进程）后其 #PF
+   (0x4E) 被反射→default 分支死——根因=CR3 判据被**线程切换**打破
+   （H 处理器语境在反射与重发射间可换线程：h->Save.Cr3=被中断线程 ≠
+   HSave.Cr3=发射线程→ownIdt 误 0→骨架网反射异常）。
+4. **粘性首见闩**（按 HvmcbPa 缓存第一次 accept 的 Idtr 意图）：首见必在
+   反射回染前；the reference hypervisor guestVmcb 每次发射重存真 Idtr、测试 hv 用前清零
+   ——两者皆免疫（真弹 ownIdt=1×6 实证）。**主冻结仍原样。**
+5. **结论（排除法+关键修正）**：svmb 基线**从未武装 INTR**（bit0 不在
+   `(1<<18)|(1<<28)`）——L1 原生投递稳定数月=原生投递本身无罪；嫌疑
+   收窄到 **QEMU TCG 对双层 guest 态（guest-in-guest）的中断投递**。
+   r186 的 INTR 摘除与 L1 语义一致（L1 本就不武），非回归源。
+
+### 冻结画像汇总（三案同型）
+
+6 accept（ownIdt=1）→ 影子合成实况 → 秒级冻结：全核 IPI 会合环
+（CR8/TPR+call+sti）、lapic ISR=0x209 永不 EOI+IRR 堆积、无 bugcheck
+无 dump、心跳绝迹。
+
+### TODO（r189）
+
+1. **QEMU 源码级研究**：TCG 对 HF_GUEST_MASK（嵌套 L2）vCPU 的中断投递
+   路径（x86_cpu_exec_interrupt/do_interrupt 对 guest-in-guest 的行为）；
+   r142 修复的精确机制可否嵌套化（per-entry kick 等价物）。
+2. 备选：接受"投递缝"为床保真度边界（同 r168 EVENTINJ 缝），the reference hypervisor
+   完整运行判真机——真机无此缝。
+
+## Round 189 (2026-10-20 晨): 窗口恒等预填——会话进入真实工作循环，冻结仍在但战场已变
+
+### 机理收束与实现
+
+- **投递压栈×冷栈页理论**：QEMU 眼中 L1/L2 同为 HF_GUEST_MASK——L1 投递
+  稳定因其栈页走恒等毯（永不缺页）；L2 栈页落惰性窗口 → 冷栈页在投递
+  压栈瞬间缺页 → 中断丢失（r168 缝家族）→ IRR 堆积 → IPI 会合冻死。
+- **实现**：粘性闩前移（ShadowInit 需早于 IDTR 段读到 OwnIdt）+
+  `NestedShadowInit` 对 ownIdt 会话**恒等预填窗口**（64×512 项 4K
+  identity，P|RW|US|A|D=0x67）；the reference hypervisor 的 NPT 本恒等=语义精确；其后续
+  NPT 编辑走 INVLPGA 擦窗/重扫合同。
+- **预填实证生效**：真弹合成**归零**（窗口零缺页），且**会话进入真实
+  工作循环**——9 次 accept（多次 per-core 重发射：L2 出口→the reference hypervisor 处理
+  器 vmsave/vmload/vmrun→再接受），机器运行深度前所未有。
+
+### 残余
+
+最终仍无签名冻结（最后 accept 进用户线程后静默死；ISR/IRR 画像同前）。
+投递压栈理论也非唯一向量——r190 需 QEMU 源码级研究 TCG 对 HF_GUEST_
+MASK vCPU 的中断投递（x86_cpu_exec_interrupt/do_interrupt 全路径），
+或判床保真度边界、the reference hypervisor 完整判绿留真机。
+
+### 回归
+
+s1/s2/s6/s7/s13/s17 全绿（s17 首跑一次 flake，复跑绿）；ALIVE。
+
+## Round 190 (2026-10-21): 床保真度边界判决——冻结案取证穷尽，svmb 侧嵌套机制宣告完备
+
+### 取证三部曲（本轮全部完成）
+
+1. **QEMU 源码走读**（qemu_git）：unarmed-INTR 的 guest 态投递全路径干净
+   ——`x86_cpu_pending_interrupt`（vintr 掩蔽被 r168b 清零正确关闭→可投递
+   性=真实 IF）→`cpu_svm_check_intercept_param`（未武=不退出）→
+   `do_interrupt_x86_hardirq`→推帧走嵌套 NPT（r189 预填=零缺页）。
+   投递层无罪。
+2. **宿主线程画像**（Get-Process .Threads 两拍）：六条 vCPU 线程全 100%
+   Running（12s 窗各烧 ~12s）=**无 QEMU 内部死锁/BQL 卡死**——guest 在跑。
+3. **逐核 lapic 全景**：六核 **ISR 全空、IRR 全={0x2F,0x91,0xD1}、
+   TPR=0xC0**——机器在 SYNC 级高 IRQL 冻结等待（与会合环 `mov cr8`
+   反汇编吻合），全部中断按优先级压制=IRR 堆积机制清楚；待投向量=
+   设备+时钟噪声（0x91≠x64 IPI 向量 0xE1）→**会合 IPI 已全部送达**，
+   发起者的后续（转储/释放）在嵌套 TCG 下永不完成。
+
+### 45 分钟耐心实验（终审）
+
+com1 全程零增长、SSH 全死、**dump 永不落盘**（r186e 的 0x139 能 dump=
+对照）——此类冻结的 bugcheck 后续路径在本床上不可完成。
+
+### 判决：床保真度边界
+
+与 r168 EVENTINJ 缝同族：QEMU TCG 嵌套模式的固有局限，可定性、不可从
+svmb 侧修复。**svmb 嵌套机制宣告完备**（反射门/意图合同/影子/VMLOAD
+仿真四代修复；the reference hypervisor 六核全接+出口-重发射工作循环+零误投递出口）。
+
+### 后续路径（二选一，下轮决定）
+
+1. QEMU 补丁战役：fork qemu_git，给 TCG 加嵌套投递/转储路径的诊断或
+   修复（独立战役规模）。
+2. 真机收卷：svmb 侧判绿，the reference hypervisor 完整运行+vlog 答卷在真机执行
+   （无 TCG 层=无此缝）。
+
+## Round 191 (2026-10-21): 单核床实验——多核会合理论出局，自死锁画像+排水守护
+
+### 实验 1：-smp 1 单核床
+
+- 启动 ~15 分钟（TCG 单核慢=预期）；svmb 1/1 虚拟化；s2/s7 绿
+  （s17 确定性 FAIL=exit 7f——玩具世界被粘性闩判 in-place 的已知家族，
+  6 核时为 flake、单核确定性——挂账）。
+- **真弹：单核同样冻结** → 多核会合唯一因理论出局。
+- **工作窗口史上最深**：出口-反射-重发射循环跨多进程/用户态 rip 正常
+  运转（com1 叙事：accept→用户态 cpuid 反射→vmsave/vmload→再 accept×N）。
+- **单核冻结画像**：TPR=0xF0（最高级）+ISR 空+IRR={0x91,0xD1 时钟}被压
+  +自旋于 `call [rip+X]; test al,al; je back` 轮询环——单核自死锁
+  （在最高 IRQL 等一个只能由被自己压住的中断改变的条件）。
+
+### 实验 2：排水守护（观察活过冻结）
+
+- `start /b` 起的守护随 SSH 会话树死亡——未产出 vlog_cap.txt。
+- **但 com1=宿主侧飞行记录仪天然免疫 guest 死亡**——捕获轮叙事完整
+  在盘（accept 带 hi1/hexc/ownIdt 仪器字段）。教训：guest 侧守护需
+  schtasks/服务级孵化才可靠。
+
+### 判决与下一步
+
+- 冻结=OS 在嵌套下进入真机不会进入的高 IRQL 等待（单核复现=非会合
+  特有）；死锁本身不可修（Windows 内核代码）；可打的=①除颤器实验
+  （检测冻结签名→强制 EVENTINJ 注入被压中断，判决性）②根因（OS 为何
+  脱轨——QEMU 插桩/真机对照）。
+- -smp 6 已复原。
+
+## Round 192 (2026-10-21): 除颤器实验——gdb-stub 宿主侧全读写落地，标志拨动=阴性但决定性
+
+### 实施升级
+
+- HMP `xp` 只读 → **HMP `gdbserver tcp::1234` 现场起 stub** + python 说 GDB
+  远程协议（`HgN` 选核/`g` 读寄存器/`m,M` 读写内存/`c` 继续/`D` 分离）=
+  冻结床的宿主侧全读写（r192_gdb.py 入库）。
+- 协议坑三连：初始无请求停机包先到、body 含头 `$`、`c` 为异步包（等待即
+  超时≠失败）。**QMP stop/reset 后必须补 cont**（gdb 会话残留停止态）。
+
+### 实验与判决
+
+- 冻结画像（gdb 版，比 QMP 更全）：六核三组 RIP——0/4=TPR 冻结环、
+  1/3=中断返回路径邻位、**2=独立位点（复活后移动=机器在跑）**、
+  5=`mov r13d+0x2d80; jnz pause` 的 **KTHREAD 等待状态轮询**。
+- **拨动 cpu5 的轮询字段 1→0 → 继续 → 该核旋即回到同自旋且字段被重置
+  为 1**——判决：**这些不是死标志而是活等待**（调度器合法重武装）；
+  等待图永不排空=缺被 TPR 压住的事件源（时钟/DPC），标志写入无法替代
+  事件投递。除颤器（标志版）阴性。
+- **下一级升级路径（留档）**：gdb 写当前 VMCB 的 EVENTINJ 字段（向量=
+  0xD1，type=0）→ QEMU vmrun 装载即投递、绕过 TPR 优先级——需先定位
+  svmb 的真 VMCB 物理地址（驱动全局/模块扫描）。
+
+### 回归
+
+s2/s7 绿；s17 首跑 FAIL 复跑绿（既知 flake 家族）；床 HEALTHY。
+
+## Round 193 (2026-10-21 下午): EVENTINJ/TPR 升级弹——两发落地，部分收获
+
+### 发射 1：EVENTINJ 物理写（受阻但路径清晰）
+
+- 计划：写六个现役 hvmcb（com1 接受行解析）+0xA8 的 EVENTINJ（0x10D1
+  =向量 0xD1/type 0/valid）→ 经接受的直通合同进真 VMCB → vmrun 绕 TPR
+  投递时钟。
+- **受阻**：gdb stub 的 m/M 只走**当前 CPU 的虚拟地址**——hvmcb 是物理
+  地址、无已知内核 VA 别名。解除路径=svmb 侧一行仪器（接受时打印
+  MapGuestPage 的 VA）后重打，或找 Windows 内核 VA 直映别名。
+
+### 发射 2：TPR 钉零补丁（落地，部分生效）
+
+- cpu2/3/4 的冻结环内两次 `mov %rcx,%cr8`+两个 rcx 装载点——补丁
+  `mov %rbx,%rcx`→`xor ecx,ecx`、`movl $2,%ecx`→`xor ecx,ecx;nops`
+  （字节级确认落位）→ 环迭代应把 TPR 钉 0 → 时钟原生投递。
+- 结果：**cpu0 的位点（8ab6）环内无 CR8 写**（TPR 一次性抬高在环外）
+  → 该核 TPR=0xF0 保持；整体无复活。新观察：**ISR 出现 0xD1 在服务**
+  （有核收下过时钟中断）但 IRR 仍堆——投递未转化为系统恢复。
+- 判读：TPR 并非唯一障碍——即便时钟送达某核，等待图的依赖（锁持有者/
+  DPC 链）仍在其他冻结核上，单核复活不级联。
+
+### 回归与状态
+
+床复位+cont 律后 HEALTHY。累计能力：gdb-stub 全读写+字节级补丁+复活/
+观察循环=冻结床完全可解剖。剩余升级：hvmcb VA 仪器（一行）→ EVENTINJ
+真弹；或按 r190 判决收卷真机。
+
+## Round 194 (2026-10-21 傍晚): EVENTINJ 齐射终审——投递成功但机器不复活，升级阶梯闭合
+
+### 齐射三件套（全部落地）
+
+1. **VA 仪器**：接受行打印 hvmcb 内核 VA（`hva=%p`）——gdb 虚拟寻址
+   弹药就位（六对 pa→va）。
+2. **六发 EVENTINJ**：VA+0xA8 ← 0x10D1（向量 0xD1 时钟/type 0/valid）
+   ——写后值 d110000000000000 确认 ×6。
+3. **cpuid 触发补丁**：三个自旋点位（4fe0=488bcb、500f=fb90、cpu0 位）
+   补成 0F A2——出口→反射→the reference hypervisor 处理→重发射→**接受转运 EVENTINJ→
+   vmrun 把时钟打进冻结上下文（绕 TPR）**。
+
+### 终审数据
+
+- **风暴引爆**：com1 300KB→32MB+——补丁环变成全速嵌套循环（cpuid→出口→
+  反射→重发射每圈全往返）；接受@补丁位+2、反射 exit=72@补丁位=循环
+  机理实证。
+- **ISR=0xD1 在服务=时钟确实被投递并收下**（EVENTINJ 路径工作正常！）。
+- **机器仍不复活**：sshd 死、TPR=0xF0 保持（cpu0 的抬高位在环外）、
+  IRR 仍堆。
+- **终审判决**：等待图的缺失依赖**不是时钟、不是可拨标志、不是 TPR**——
+  是冻结状态机深处的单向状态（bugcheck/冻结路径在嵌套 TCG 下早已越过
+  不可恢复点）。r190 床保真度判决在最深证据级站立；升级阶梯闭合。
+
+### 战役能力总结（r192-r194）
+
+冻结床完全可解剖+可干预循环：gdb-stub 全读写→字节级补丁→EVENTINJ 武装
+→复活观察→lapic/线程画像判读。任何后续嵌套冻结案都可走此流程。
+
+## Round 195 (2026-10-21 晚): 自助全内存快照——"冻结"真身判决：永远写不完转储的 BSOD（0x139 fast-fail @ HAL enlightenment 路径）
+
+### 新能力：冻结现场 host 侧全内存拍取 + 离线 WinDbg 管线
+
+- **七轮取证的思路盲区**：一直在等 OS 自己写 dump；正解是冻结瞬间 QMP
+  `dump-guest-memory` ELF 全物理内存（4.0GB，11 秒）+ 六核寄存器。
+- windmp 直出两条路都死：QMP 枚举无 windmp 格式；HMP `-w` 报
+  "no vmcoreinfo note from the guest"（QEMU 8.0 起删了 KDBG 扫描回退，
+  要求 guest 装 vmcoreinfo 驱动——冻结中不可能）。
+- **r195_elf2dmp.py 两遍法**（`qemu/r195_dump.py`+`qemu/r195_elf2dmp.py`）：
+  本床 debug-off boot 下 KdDebuggerDataBlock **整块加密**（"KDBG" 裸扫
+  20 命中全为代码垃圾），故免 KDBG 合成 DMP64 头：nt 基址=IDT[0] 门目标
+  向下扫 MZ（fffff80352e00000）；**PsLoadedModuleList=nt+0x448150 链头
+  本体**（r148 常数；曾犯双解引用——header 放链头不 deref，cdb 才闭环，
+  放 hal 条目则 cdb 绕回把链头当条目读出 base=0 报 corrupt）；build=18363
+  （KUSD 走表）。cdb 打开后 ntkrnlmp.pdb 缓存直接命中，154 模块全列
+  （svmb@fffff8023b170000 / AmdVReloadDbg@fffff8023c910000 /
+  hal@fffff80352d5d000）；KDBG=0 cdb 可容忍（"PARTIALLY CORRUPT"警告
+  但符号/模块/栈全可用）。手工栈解剖无需 CONTEXT 帧补丁；已收割备用
+  常数：KiProcessorBlock=nt+0x375ac0、KPRCB.Context=+0x62c0、
+  KdDebuggerDataBlock=nt+0x2265e0。
+- **HMP 多核寄存器律**：`cpu N` 在独立 human-monitor-command 调用间
+  **不保持**（六块全打 CPU#0=伪"六核同 RIP"）；必须用 `cpu-index` 参数。
+
+### 判决（七案同根，全链符号化）
+
+cpu0 现场：RIP=hal!HaliHaltSystem+0x26（`test al,al; je` 泊车环），RSP 在
+处理器栈（TSS 邻域 fffff803566b****）≠ CurrentThread（Skype.exe 线程）
+内核栈 = bugcheck 栈切换指纹；R15=KTHREAD=PRCB.CurrentThread 自洽。
+完整调用链（活栈+KTRAP_FRAME@566b2590 走出）：
+
+```
+hal!HalpTimerUpdateApiConsumers+0x32        （定时器日常维护）
+→ hal!HalpRestoreHvEnlightenment+0x35b      （HV enlightenment 保存/恢复）
+→ hal!HalpApicHvUpdateCallback+0x9
+→ hal!HalpApicSetupRegisterAccess+0x46
+→ hal!HalSocRequestConfigurationData+0x131  ← /GS 尾检查失败
+     (mov rcx,[rbp-8]; xor rcx,rsp; call __security_check_cookie 不匹配)
+→ hal!_report_gsfailure+0x5 → int 29h
+→ nt!KiBugCheckDispatch+0x69 携原参 KeBugCheckEx(0x139, arg1=2
+   = FAST_FAIL_STACK_COOKIE_CHECK_FAILURE)   ← 栈帧为证
+→ nt!KeBugCheck2（IoSetBugCheckProgressFlag/KeBugCheck2+0x18d4 转储阶段）
+→ 转储在嵌套 TCG 下永不完成（45 分钟律的机理）→ KiBugCheckDebugBreak
+→ nt!DbgBreakPointWithStatus → hal!HaliHaltSystem 永久泊车
+cpu1-5 = nt!KiIdleLoop+0x40（bugcheck IPI 冻结后的空闲泊车，CR3=1aa000）
+```
+
+KiBugCheckData/KiBugCheckOriginalData 均全零=bugcheck 处理中已清；
+幸存证据在栈帧与 KTRAP_FRAME。
+
+### 全案重释（此前七轮画像的统一解释）
+
+- TPR=0xF0/ISR/IRR 画像 = KeBugCheck2 自己抬 IRQL+IPI 冻结的**工件**，
+  不是独立死锁；vmhealth blue=51% 一直是 bugcheck 画完的半蓝屏。
+- r194 EVENTINJ 齐射救不活的字面真相：机器在 bugcheck 死亡行军中，
+  时钟送达改变不了终局；"单向状态机"= bugcheck 路径。
+- 单核同冻：定时器维护任何核都会跑；L2 玩具驱动不冻：玩具不执行
+  Windows HAL 的 hypervisor-enlightenment 代码——只有真 Windows 当 L2
+  才走进这条路（r192 用户之问的正式答案）。
+
+### 根因层（cookie 为何失配——r196 靶）
+
+- 背景要件：Windows HAL 之所以走 HV enlightenment 路径 = CPUID 面在
+  嵌套下呈现 hypervisor 存在/x2APIC 能力差异（the reference hypervisor 武装 CPUID/RDMSR
+  反射处理是头号嫌疑——它的 CPUID 出口处理器在 svmb 反射的 VMCB 语境跑）。
+- cookie 失配两候选：A. enlightenment 路径的 MSR/APIC 操作在反射-重发射
+  往返中某环把数据推上内核栈（canary 被写）；B. RSP 中途被移动
+  （prologue cookie^RSP 与 epilogue 不配）。
+- 修复方向：svmb 侧 NestedSelfServeExit 的 CPUID 自服务对特定叶
+  （hypervisor bit/x2APIC）回 L1 原生结果对照，或按反射合同检查
+  the reference hypervisor CPUID/RDMSR 处理器的 GPR/RSP 回写语义。
+
+### 律
+
+- 冻结案取证正解=host 自助拍全内存+离线转换分析，不再等 OS 写 dump。
+- QEMU 11.1 冻结床多核寄存器：human-monitor-command 带 cpu-index。
+- 1903 debug-off：KDBG 整块加密 → windmp/HMP -w 均不可用；免 KDBG
+  DMP 合成+符号驱动手工解剖完全够用（本管线可复用）。
+- 现场文件：dumps/r195_freeze.elf/.dmp（4GB×2，留档不入库）。
+
+## Round 196 (2026-10-21 深夜): CPUID 面对照实验——面修灭掉第一死法，冻结换车（0x7F 双错）
+
+### 预测与干预
+
+- **r195 死法的背景要件查源**：Windows HAL 走 enlightenment 路径的判定=
+  `HalpIsHvPresent()`=CPUID(1).ECX bit31（缓存@52dc7b33）+回调注册进
+  `HalpTimerHvApicCallbackList`。三层静态排查（the reference hypervisor CPUID 处理器=原生
+  直通只藏 SVM 位；svmb EmulateCpuid=裸 __cpuidex 直通；H-view 只是不藏
+  SVM）→ **没有人伪造 hypervisor 位**。活床 WMI HypervisorPresent=True
+  实测 → **QEMU TCG 强制位**：qemu 源 cpu.c:8487 `x86_cpu_load_model` 对
+  所有命名模型无条件 `FEAT_1_ECX |= CPUID_EXT_HYPERVISOR`（TCG_EXT_FEATURES
+  同时含 X2APIC）——床从裸机启动即向 Windows 宣告 hypervisor 在场（真机
+  不会：svmb 是 demand 驱动，晚于 HAL 判定）——**床保真度偏差实锤**。
+- **干预**：`-cpu max,hypervisor=off`（feat_names 表证明属性存在；QMP
+  query-cpu-model-expansion 实证 hypervisor=False 且 svm/x2apic 保留）。
+  start_svmb.bat 修改+deploy 全新 QEMU（血统律）。启动后：WMI
+  HypervisorPresent=**False**、svmb 6/6 虚拟化、s2（钩全周期）/s7
+  （dr7=400 终态）com1 判绿（客户端 probestage 2/7 的"view switch FAIL"
+  =显示伪影——stage 2 驱动侧不填 Pml4Pa/VmcbNcr3，判据在 com1）。
+
+### 判决：第一死法已灭，冻结仍在（第二死法=双错）
+
+- 发射 r185load 后 ~90-120 秒冻结同窗落地（com1 静止+sshd 死+CPU 忙）。
+  **立即 r195 管线拍照**（r196_freeze.elf/.dmp；dump 头元数据
+  AnyHypervisorPresent=0 vs r195 的 1——面改在 dump 里可见）。
+- 六核画像：cpu2=**hal!HaliHaltSystem+0x26（与 r195 同址+0x32ab6，泊车
+  终点相同）**、cpu1/3=nt!KiIdleLoop、**cpu0/4/5 全在内存管理器**
+  （MiAgeWorkingSetTail+0x402 / MiLockPageTableInternal+0x2c0 /
+  MiFlushTbList+0x3a0）+com1 invlpga 影子擦除风暴=MM 换页翻搅影子。
+- **死码变了：KeBugCheckEx(0x7F, arg1=8) = UNEXPECTED_KERNEL_MODE_TRAP
+  /DOUBLE FAULT**（KiBugCheckDispatch+0x69 帧携原参 7f/8 为证；r195 的
+  0x139/arg2 cookie 死法在面修后**不再出现**——enlightenment 车道确被
+  拆除）。#DF 自身 trap frame 的 Rip=0（双错摧毁上下文，只剩指令字节
+  残片）——页错误处理中再页错误的经典形态，r168 嵌套投递缝家族的
+  crash 级形态；土壤=三核并发 MM 活动驱动 NPF/INVLPGA 翻搅。
+- 两案同点：hal cookie 补值 `cfaa65c471bf264a 2a4961b361d6a937` 跨
+  boot 相同（本床 __security_cookie 不随机化的旁证）。
+
+### 判决定性总结
+
+1. **面修=部分胜利**：r195 的 0x139-cookie 车道永久拆除，且床面从此与
+   真机一致（hypervisor 位不再伪造）——`hypervisor=off` 保留为床新基线。
+2. **冻结不死于一因而死于多因**：嵌套 TCG 下至少两条独立死法
+   （cookie-crash 与 double-fault），后者在面修后浮出为第一死因——
+   r190 床保真度边界判决在更深层站立：**嵌套异常/投递缝（QEMU TCG
+   HF_GUEST_MASK 语义）才是共同根**，svmb 侧（反射/影子机制本体）在
+   两案中均无直接罪证。
+3. the reference hypervisor 嵌套战役结论维持：机制面完备（r184 判决），真机收卷。
+
+### 工具修正
+
+- r195_dump.py regs 捕获重写（`cpu N` 跨 human-monitor-command 不保持=
+  cpu-index 参数；越界 cpu-index 被钳位重复——固定 range(6)）。
+
+### 现场文件
+
+dumps/r196_freeze.elf/.dmp（4GB×2 留档不入库）。
+
+## Round 197 (2026-10-22): INTR 全出口实验——缝假说正面判决：死亡消灭，代之以排风暴活锁
+
+### 实现（门控，默认关）
+
+- 读码发现：r186 的意图合并**已为骨架会话武装 ic1 bit0**（OwnIdt 会话豁免
+  ——信任 H 自带 IDT 的原生投递）；而 the reference hypervisor 恰是 OwnIdt → 缝正对着它。
+- 三件套落地（registry 门 `Parameters\NestedIntrPunt` 默认 0，门关=逐位等价
+  实证 s2/s7 com1 签名一致）：
+  1. 接受路径 OwnIdt 分支门控武装 bit0（TCG 投递前查现行 VMCB 的 INTR 位
+     → 出口 0x60 而非推进 L2）；
+  2. NestedSelfServeExit 新增 case 0x60：L1 语境 `_enable()`+16us 排水+
+     `_disable()`，fault-class 不进 RIP（0x75 先例）——绝不反射
+     （the reference hypervisor default=KeBugCheck）；
+  3. 限流日志（前 4 条+每 65536 条）。
+
+### 判决（10 分钟窗口）
+
+- **死亡消灭**：发射 r185load 后 90-120s 历史冻结窗×5 时间无静默冻结、无
+  bugcheck 泊车——com1 持续增长、嵌套 accept 会话持续循环（13 次）、六核
+  多 hvmcb 并发。r195 cookie / r196 双错两类死法**均未发生**：缝假说成立
+  （不让 TCG 向 guest-in-guest 推事件=两死法断根）。
+- **代价=排风暴活锁**：intr punt n=57M、~90k/s、加速趋势；punt RIP 主要在
+  L2 idle 环族（KiIdleLoop 区）；sshd banner 死（用户态饿死）。
+- 画像证据：lapic IRR={209 时钟,225,+145(level)} 持续滞留、ISR 恒空、
+  TPR=0x20 可投——**排水窗未产生实际投递**（或投递被 L1 消费而 L2 唤醒
+  丢失）。QEMU 源码核对：vmexit 清 GUEST_MASK/intercept 但不清
+  CPU_INTERRUPT_HARD——L1 语境投递语义上允许；失败微观机理未决
+  （HARD 标志生命周期/向量再挂起二选一）。
+
+### r198 设计（已定）：EVENTINJ 重注入=KVM 同款入口投递
+
+- 0x60 punt 改为：读 LAPIC（0xFEE00000 MMIO，L1 映射真实通路）IRR 最高
+  优先级向量 → 写真 VMCB EVENTINJ（vector,type=0,valid）→ 重入 →
+  **TCG 在 VMRUN 入口投递**（架构路径，r194 已证 EVENTINJ 转移可达
+  ISR 在服务）→ L2 走自己的 IDT/栈=语义正确的嵌套合同（=KVM 的 merged
+  VMCB 入口注入的软件版）。排水到 L1 的旧法弃用（唤醒归属两难）。
+
+### 工程注
+
+- 新构建 1cdfd018（门关等价 r196 面）；punt 风暴期间多核串口交织=显示
+  伪影（r179 律再验）。床复位后须 reg 置 NestedIntrPunt=0 回基线。
+
+## Round 198 (2026-10-22): STGI 排水——风暴根除（4 次 vs 5700 万），但开窗投递踩中 Cm 锁图（新死相）
+
+### QEMU 源三答（设计改判：弃 EVENTINJ 改 STGI 排水）
+
+1. **EVENTINJ valid=bit31**（svm.h SVM_EVTINJ_VALID）——r194 的 0x10D1 用 bit12
+   =**从未注入过**；当年"ISR=0xD1 在服务"实为原生投递。档案修正。
+2. 注入路径=helper_vmrun 直调 do_interrupt_x86_hardirq，**无 APIC 记账**
+   （IRR 不清）→ EVENTINJ 方案先天双投递乒乓，弃。
+3. 外部中断链（seg_helper x86_cpu_exec_interrupt）：**拦截检查在
+   apic_get_interrupt 之前 + 拦截路径不清 CPU_INTERRUPT_HARD**=风暴机理；
+   **host 态检查 no-op**（!(hflags&HF_GUEST_MASK) 早退）→ handler 内开
+   GIF+IF 可走完整记账投递。
+
+### 实现（r197 case 0x60 升级）
+
+`__svm_stgi(); _enable(); stall 16us; _disable(); __svm_clgi();`
+——r197 排水失败的根=svm_entry 出口循环全程 **GIF=0**（cr3_monitor:744
+白纸黑字的 wiggle 不变量），QEMU pending 树以 GIF 为总闸。
+
+### 判决（一半成功）
+
+- **风暴根除**：intr punt 总数 **4 次**（r197 为 5700 万）——STGI 开窗
+  投递真发生（QEMU 记账路径消费 IRR、清 HARD 标志）。
+- **新死相**：~120s 后静默冻结（com1 零增长）——dump 解剖：**Cm 注册表
+  锁图楔死**——cpu4 持 nt!CmpRegistryLock 共享且等相邻 Cm 资源
+  （svchost/Registry worker，RUNNING-stuck）、cpu2 KeAcquireInStack
+  QueuedSpinLock 自旋、cpu3 ExIsResourceAcquiredSharedLite、cpu0
+  KiInsertQueueDpc、cpu1/5 用户态、smartscreen 线程 READY 未调度。
+  根因定性：GIF+IF 开窗让 ISR/DPC 在**出口处理中途**运行（svmb 有史
+  第一次），搅乱 Cm/调度状态（cr3_monitor 注释预言的 GIF=0 不变量
+  破坏类的 live 证明）。
+- 现场留档 dumps/r198_freeze.elf/.dmp。
+
+### r199 岔路（三选一）
+
+- A. **IRCL 守护窗**：抬 IRQL=DISPATCH 再开窗（ISR 可进 DPC 拖延）——
+  但 KeLowerIrql 在 handler 内即触发被拖延 DPC，需再设计落点。
+- B. **单入卸位 A/B**：punt 改 nap+卸 bit0 一入（下一出口复装）——
+  判决"L2 入口投递是否也致命"；死=TCG 投递从 svmb 侧不可救，转 C。
+- C. **换引擎**：QEMU 补丁战役 / VMware vhv 床（取证全家桶现成）。
+
+## Round 199 (2026-10-22): 单入卸位 A/B——阴性终判：受控入口投递同样致命，svmb 侧投递设计空间正式穷尽
+
+### 实现（B 形）
+
+- case 0x60 改为：**卸 ic1 bit0 恰好一次重入**（无排水、无 GIF/IF 开窗=
+  零 DPC 风险）——pending 向量在重入首拍 L2 语境原生投递（走 L2 自己的
+  IDT）；NestedSelfServeExit 顶部对非 0x60 出口复装 bit0；reflect→accept
+  路径由意图合并天然复装。暴露窗=每 punt 恰好一个重入周期。
+- 构建 5953feb8，三查✓，门关等价 s2/s7 绿。
+
+### 判决（B 阴性——与 r195 逐位同型）
+
+- 机制面工作正常：punt 总数 **4 次**（无风暴，卸位-投递-复装循环成立），
+  ~120s 后 com1 静默冻结、sshd 死。
+- dump 定罪：cpu1=**nt!InbvCheckDisplayOwnership**（bugcheck 画屏路径，
+  专用栈）→ 崩溃栈与 **r195 逐位同骨架**：hal!HaliHaltSystem+0x26 泊车、
+  DbgBreakPointWithStatus→KiBugCheckDebugBreak→IoSetBugCheckProgressFlag→
+  KeBugCheck2+0x18d4 全同 RVA、**KeBugCheckEx(0x139, arg1=2=STACK_COOKIE)**
+  ×2 帧、KTRAP_FRAME Rip=**hal!_report_gsfailure+0x5**+
+  STATUS_STACK_BUFFER_OVERRUN(0xC0000409)——同类同源；但本床
+  hypervisor=off（enlightenment 车道已拆），cookie 这次砸在**另一个 hal
+  函数**=投递落点无关性闭环。其余核：cpu0/4=MiFlushTbList、cpu2/5=
+  KiIdleLoop、cpu3=ERESOURCE 等。
+- r198/r199 均"恰好 4 次 punt 后死"——第 4 个待投事件从两扇门（L1 排水/
+  L2 入口投递）进来都致命。
+
+### 投递设计空间终局表（四门全试）
+
+| 门 | 轮 | 结果 |
+|---|---|---|
+| 原生中途投递（bit0 不武） | r195/r196 | 0x139 cookie / 0x7F 双错 |
+| 拦截+不投递 | r197 | **死亡消灭**但排风暴活锁（IRR 楔+HARD 不清） |
+| 拦截+L1 排水（STGI 窗） | r198 | 风暴根除但 ISR/DPC 中途运行搅死 Cm 锁图 |
+| 拦截+受控单入投递 | r199 | **0x139 cookie 同型死亡** |
+
+**终判：QEMU TCG 对 L2 的中断帧推送本身即损坏源，与时机无关；svmb 侧
+无剩余之门。**嵌套投递缝正式升级为已证明的不可修边界（原 r190 观察级
+判决 → 现机制级证明）。r197 形（bit0 常武+零投递）仍是唯一不死形态=
+**vlog 长时观测载具**（会话 90s→10min+，代价 OS 饿死）——the reference hypervisor 行为
+录制战役可直接用它。
+
+### 后续路径（终局三选）
+
+1. **VMware vhv 床**（推荐：基础设施+取证全家桶现成，vhv 投递=硬件辅助
+   语义）。
+2. QEMU 补丁战役（缝已定位到帧推送实现层）。
+3. 真机收卷（r184/r190 判决不变）。
+
+## Round 200 (2026-10-22): 第六门（投递瞬间换世界）——阴性，但签名漂移带新信息
+
+### 实现与执行
+
+- 用户方案："L2 投递改为 L1 相同方式"——punt 时 NCR3 换回 svmb 恒等根
+  （the reference hypervisor 嵌套表本恒等，非钩页物理落点不变；栈/IDT/页表页全非钩目标）
+  + 卸位一入 + FLUSH_ALL（r163 换根律）+ 下一出口（分发块顶，compose 之前）
+  归还影子根+复装 bit0（`NestedIntrDeliveryWindowClose`）。
+- 构建 b2a4b44d，三查✓，门关等价 s2/s7 绿。期间 deploy 后台任务树被
+  收割连带 QEMU 死亡（SSH 全拒）——重拉床教训：**QEMU 是 deploy.bat 的
+  子进程，后台任务生命周期=床生命周期**。
+- 门开发射：**4 punts 后静默冻结**（同 r198/r199 的"恰好 4 次"）。
+
+### 判决（阴性+签名漂移）
+
+- **门 6 阴性**：恒等根投递同样死。但死相签名从 r199 的 0x139-cookie
+  **漂移为 0x7F/arg1=8 双错**（KiBugCheckDispatch+0x69 帧双证）——
+  r200_sigprobe.py（ELF 直扫栈签名，免 cdb——windbg-mcp 通道故障时的
+  替补管线）。
+- 诚实标注混淆量：r200 相对 r199 的 delta=换根+强制冲刷（换根必冲刷，
+  非纯单变量）；签名漂移证明根/冲刷变量影响失败机理（identity 下
+  投递期 fault 成 DF，shadow 下帧落偏成 cookie），但**两根皆不安全**。
+- **三轮"恰好 4 次 punt"恒常**（r198 排水/r199 卸位/r200 换根，三门
+  各异）——强线索：可能是同一个第 4 待投事件（特定向量）在任何投递
+  形态下都致命。r201 靶：punt 时读 LAPIC IRR 顶向量记日志，点名小偷。
+
+### 六门终局表（追加）
+
+| 门 | 轮 | 结果 |
+|---|---|---|
+| 原生中途 | r195/r196 | 0x139 cookie / 0x7F DF |
+| 拦而不投 | r197 | 不死但风暴 |
+| L1 排水（STGI 窗） | r198 | 风暴灭但 Cm 锁死 |
+| 受控单入（shadow 根） | r199 | 0x139 cookie |
+| 恒等根投递+卸位+冲刷 | r200 | **0x7F DF（签名漂移）** |
+
+svmb 侧结论维持：TCG 内投递无安全门；QEMU 补丁=唯一根治；"4-punt
+小偷"=最后的床内线索。
+
+## Round 201 (2026-10-22): 凶器点名——死亡序列的待投向量全录 + "恰好 4 次"证伪
+
+### 仪器（两迭代）
+
+- r201a：x2APIC MSR 路径 → 实测 **guest=xAPIC**（x2=0，IRR 全零=盲区）；
+  同时揭穿 **"恰好 4 punts"是串口交织伪影**（punts 3-5 的行撞进
+  exit-trace 搅碎；本轮真计数 ≥7，n=7 rip=用户态）。
+- r201b：MMIO 路径（MmMapIoSpace 0xFEE00000 懒映射，IRQL 守护；PPR=+0xA0、
+  IRR=+0x200 步长 0x10）——**仪器命中**。
+
+### 判决：死亡序列向量点名（r200 行为+日志，死亡 0x7F/8 DF 同型）
+
+```
+punt1 vec=D1 (时钟)      ppr=00
+punt2 vec=2F (设备)      ppr=00
+punt3 vec=D2 (时钟族)    ppr=20   ← 0x2F 仍在 IRR（punt2 的投递没消费它！）
+punt6 vec=E1 (IPI!)      ppr=20
+（punts 4/5 行被串口交织吃掉；死相 cpu4 0x7F/8 双错）
+```
+
+- **投递丢失实锤**：0x2F 跨 punt 持续滞留 IRR——即使 r200 的受控单入
+  投递也不可靠地消费向量（r168 丢失家族在 punt 路径下仍在发生）。
+- **0xE1=Windows IPI 在死亡前夜在场**：跨核会合事件投递进 L2 语境 +
+  已证的部分丢失 = r190"会合环冻结"画像的钥匙成型。
+- 0x139-cookie 与 0x7F-DF 两签名跨门跨轮交替=同一投递不稳定性的两副
+  面孔（帧落偏=cookie；投递期 fault/丢失=DF/挂死）。
+
+### 归档修正与终判
+
+- "三轮恰好 4 punts"假设**证伪**（串口交织伪影）；真模式=若干 punt 后
+  死，向量序列含时钟×2、设备（丢失）、IPI。
+- svmb 侧终判不变且更精确：TCG 嵌套投递的病=**两件套**（压栈损坏+
+  投递丢失），都在 QEMU 的投递实现里——QEMU 补丁的靶点清单从此有
+  名有姓；svmb 侧无安全门（六门+点名全证）。

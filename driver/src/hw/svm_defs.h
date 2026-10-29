@@ -50,10 +50,18 @@ constexpr u32 EFLAGS_TF = 8;
 constexpr u32 EFLAGS_RF = 16;
 
 // ---- event injection types (VMCB eventInj.type) ----
+// r154: APM encoding - type 1 is RESERVED; NMI=2, EXEPT=3, SOFT=4. The
+// old values (NMI=1/EXEPT=2/SOFT=3) were shifted one down, so every
+// "exception" reinject was actually a type-2 = NMI injection: QEMU TCG
+// delivered v=02 on the faulting RIP (r153/r154 smoking guns) and the
+// kernel took it as an unexpected NMI -> 0x80 BUGCODE_NMI -> bugcheck
+// sync-wedge. The same shape explains r136's vhv "5 minidumps all 0x80"
+// and the r39-era "arming kills" family: the M1 death sentence was this
+// enum all along, not event-injection intolerance.
 constexpr u32 EVT_INTR = 0;
-constexpr u32 EVT_NMI = 1;
-constexpr u32 EVT_EXCEPTION = 2;
-constexpr u32 EVT_SOFTINT = 3;
+constexpr u32 EVT_NMI = 2;
+constexpr u32 EVT_EXCEPTION = 3;
+constexpr u32 EVT_SOFTINT = 4;
 
 // ---- hypercall channels ----
 // primary: VMMCALL instruction (rax = nr, args rbx/rcx/rdx/rsi/rdi, result rax)

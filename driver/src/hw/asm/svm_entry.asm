@@ -497,6 +497,22 @@ no_self_exit:
 	jmp enter_guest
 
 vmrun_failed:
+	; r144 law: QEMU lands a failed VMRUN (SVM_EXIT_ERR = -1) here with
+	; GIF=0 - cpu_vmexit's tail clears it and the VMRUN never ran far
+	; enough to re-set it. The old bare ret left the core interrupt-dead
+	; forever: clock parked in the LAPIC IRR, device IRQs routed to this
+	; core never deliver, and the guest bleeds out into triple faults
+	; (r144 evidence: 0xD1 stuck in IRR, ahci/death cascade). Beacon the
+	; code through the IRQL-safe channel first (same family as the 0x184
+	; vmrun-pre beacon), then re-enable interrupts before unwinding.
+	; SVME is still set (only the devirt paths clear it), so stgi cannot
+	; #UD here. Non-volatile GPRs carry guest residue - SvmbCrumbPostD
+	; preserves them per the C ABI, and the bare-ret residue leak below
+	; is pre-existing behavior, unchanged by this fix.
+	mov rdx, rax                    ; -1/-2/-3 exit code
+	mov rcx, 185h
+	CALL_WITH_SHADOW SvmbCrumbPostD
+	stgi
 	mov rax, [rsp + 20h]   ; original rsp
 	mov rsp, rax
 	ret

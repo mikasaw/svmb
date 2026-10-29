@@ -109,6 +109,8 @@
     <ClCompile Include="src\core\exit_dispatcher.cpp" />
     <ClCompile Include="src\core\intercept_manager.cpp" />
     <ClCompile Include="src\core\hypercall.cpp" />
+    <ClCompile Include="src\core\nested.cpp" />
+    <ClCompile Include="src\core\vlog.cpp" />
     <ClCompile Include="src\core\crumbs.cpp" />
     <ClCompile Include="src\core\module.cpp" />
     <ClCompile Include="src\core\npt_probe.cpp" />
@@ -117,6 +119,7 @@
     <ClCompile Include="src\hw\msrpm.cpp" />
     <ClCompile Include="src\platform\util.cpp" />
     <ClCompile Include="src\platform\logger.cpp" />
+    <ClCompile Include="src\platform\marker.cpp" />
     <ClCompile Include="src\platform\offsets.cpp" />
     <ClCompile Include="src\mm\phys_mem.cpp" />
     <ClCompile Include="src\mm\npt.cpp" />
@@ -163,6 +166,7 @@
     <ClInclude Include="src\core\exit_dispatcher.h" />
     <ClInclude Include="src\core\intercept_manager.h" />
     <ClInclude Include="src\core\hypercall.h" />
+    <ClInclude Include="src\core\nested.h" />
     <ClInclude Include="src\core\module.h" />
     <ClInclude Include="inc\svmb\module_api.h" />
     <ClInclude Include="..\shared\svmb_protocol.h" />

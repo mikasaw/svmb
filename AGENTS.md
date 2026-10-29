@@ -121,7 +121,12 @@ msbuild 直接编落到 `<driver>\x64\Debug\`），拷错版本浪费一晚。
 ## 5. Skill-loading rules
 
 - `vm-driver-debug-loop`：driver VM debug 循环。**唯一** Phase 1-7
-  流程入口。
+  流程入口（**VMware 测试床专用**）。
+- **QEMU 测试床（`qemu/` 目录，2026-10-16 起的嵌套虚拟化战役主场）**：
+  控制/部署/健康探测用 `qemu-vm-control`，内核调试用 `qemu-vm-kernel-debug`
+  ——上面 Phase 1-7 的 `build\vm_*.bat` 系列在 QEMU 床上**不适用**，别走错
+  通道（QEMU 床的部署是 `vm.py push` + SSH，复位是 monitor
+  `system_reset`）。
 - `vmware-vm-control`：开/关/重启 VM 的电源操作（含 AutoAdminLogon）。
   重置场景下和 `vm-driver-debug-loop` 互补。
 - `vmware-file-transfer`：host ↔ guest 文件传输 + SHA256 校验。

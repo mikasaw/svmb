@@ -1,5 +1,6 @@
 #include "core/exit_dispatcher.h"
 #include "core/crumbs.h"
+#include "core/hypervisor.h" // r157: g_stepProbe death-window probe
 #include "platform/logger.h"
 #include "platform/util.h"
 
@@ -190,13 +191,29 @@ void ExitDispatcher::ApplyDefault(GuestContext& ctx)
 
 void InjectEvent(GuestContext& ctx, u32 vector, u32 type, bool errorCodeValid, u32 errorCode)
 {
+    InterlockedExchange64(&g_stepProbe[1], 6); // r157: InjectEvent enter
     EventInj inj = {};
+    EventInj pre = {};
+    pre.Data = ctx.Vmcb()->Ctrl.EventInj.Data;
+    InterlockedExchange64(&g_stepProbe[1], 7); // r157: post pre-read
+    g_stepProbe[3] = (LONG64)pre.Data;
     inj.F.Vector = vector;
     inj.F.Type = type;
     inj.F.Ev = errorCodeValid ? 1 : 0;
     inj.F.ErrorCode = errorCode;
     inj.F.Valid = 1;
     ctx.Vmcb()->Ctrl.EventInj.Data = inj.Data;
+    g_stepProbe[4] = (LONG64)inj.Data;
+    g_stepProbe[5] = (LONG64)ctx.Vmcb()->Ctrl.EventInj.Data;
+    InterlockedExchange64(&g_stepProbe[1], 8); // r157: post write+readback
+    // r154 diagnosis: write-readback - the T+0 freeze snapshot showed
+    // 0x302 (valid=0, vector=2, type=3) at 0xA8 where this code writes
+    // 0x800003xx. Log pre/post values to pin whether the store lands
+    // intact and who rewrites it.
+    SVMB_LOGW("injdiag: pre=%llx wrote=%llx readback=%llx rip=%llx",
+              (unsigned long long)pre.Data, (unsigned long long)inj.Data,
+              (unsigned long long)ctx.Vmcb()->Ctrl.EventInj.Data,
+              (unsigned long long)ctx.Regs->Rip);
     // r38: this VMware vhv silently DROPS control-area writes unless the
     // VMCB clean bits are cleared (same law as the NCr3 publish and the
     // live intercept arming - stage 1 / M4-D). Without this, the injected
@@ -208,31 +225,32 @@ void InjectEvent(GuestContext& ctx, u32 vector, u32 type, bool errorCodeValid, u
 
 void ReinfectExitEvent(GuestContext& ctx)
 {
-    // ExitIntInfo describes the event that triggered an exception-class exit;
-    // copy it back into EventInj so the guest receives it transparently
-    EventInj src = {};
-    src.Data = ctx.IntInfo;
-    if (!src.F.Valid)
+    InterlockedExchange64(&g_stepProbe[1], 4); // r157: Reinfect enter
+    // r155: triangulation probe - prints before anything else in the
+    // r154 death window (exc-exit log printed, injdiag never did)
+    SVMB_LOGW("reinfect: enter exit=%llx rip=%llx",
+              (unsigned long long)ctx.Exit,
+              (unsigned long long)ctx.Regs->Rip);
+    // r154: the EXIT CODE is the authoritative event source for
+    // exception-class exits (APM: 0x40+N for exception N). EXITINTINFO is
+    // NOT portable truth: QEMU TCG's do_vmexit mirrors event_inj into
+    // exit_int_info (svm_helper.c:904) - the residue of the LAST DELIVERED
+    // event (handle_even_inj repopulates event_inj on every delivery),
+    // not the event that caused this exit. Copying it reinjects a stale
+    // event: r153's smoking gun was a stale NMI delivered on the faulting
+    // RIP -> kernel 0x80 bugcheck family (r136's vhv 0x80 minidumps are
+    // the same death, unified).
+    if (ctx.Exit >= vmexit::EXCEPTION(0) && ctx.Exit <= vmexit::EXCEPTION(31))
     {
-        // no usable event info: fall back to a software exception vector match
-        if (ctx.Exit >= vmexit::EXCEPTION(0) && ctx.Exit <= vmexit::EXCEPTION(31))
-            InjectEvent(ctx, (u32)(ctx.Exit - vmexit::EXCEPTION(0)), EVT_EXCEPTION, false, 0);
+        u32 vector = (u32)(ctx.Exit - vmexit::EXCEPTION(0));
+        // EXITINFO1 carries the error code; the Ev bit is only meaningful
+        // for the has-error-code vectors (#DF/#TS/#NP/#SS/#PF/#AC)
+        bool hasErr = vector == 8 || (vector >= 10 && vector <= 14) || vector == 17;
+        u32 err = hasErr ? (u32)ctx.Info1 : 0;
+        InterlockedExchange64(&g_stepProbe[1], 5); // r157: range ok
+        InjectEvent(ctx, vector, EVT_EXCEPTION, hasErr, err);
         return;
     }
-    EventInj inj = {};
-    inj.F.Vector = src.F.Vector;
-    inj.F.Type = src.F.Type;
-    inj.F.Ev = src.F.Ev;
-    inj.F.ErrorCode = src.F.ErrorCode;
-    inj.F.Valid = 1;
-    ctx.Vmcb()->Ctrl.EventInj.Data = inj.Data;
-    // r39: same law as InjectEvent below - this vhv drops control-area
-    // writes unless CleanBits is cleared. ReinfectExitEvent is the path the
-    // exception exits actually use; the r38 fix covered only InjectEvent,
-    // so every reinjected #BP/#UD was silently swallowed (kd break int3 ->
-    // swallowed -> KDNET retry spin -> hang -> WER live dump -> soft reset).
-    ctx.Vmcb()->Ctrl.CleanBits.Bits = 0;
-    ctx.EventInjected = true;
 }
 
 void EmulateCpuid(GuestContext& ctx)

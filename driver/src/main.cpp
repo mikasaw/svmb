@@ -1,5 +1,7 @@
 // svmb driver entry: device + IOCTL surface over the hypervisor core
 #include "core/hypervisor.h"
+#include "core/nested.h" // r177: H-view IOCTL face
+#include "core/vlog.h" // r181: vlog IOCTL face
 #include "core/npt_probe.h"
 #include "mm/offline_tests.h"
 #include "mm/npf.h"
@@ -16,10 +18,14 @@
 #include "platform/saferead.h"
 #include "core/crumbs.h"
 #include "platform/util.h"
+#include "platform/marker.h"
 #include "svmb_protocol.h"
 #include <wdmsec.h>
 
 using namespace svmb;
+
+// r197: nested-session INTR punt gate setter (core/nested.cpp)
+extern "C" LONG svmbNestedIntrPunt(LONG on);
 
 void* operator new(size_t size, POOL_TYPE pool, ULONG tag);
 
@@ -175,10 +181,16 @@ NTSTATUS DevCtrlLocked(PIRP irp)
         }
         SVMB_HV_CONTROL* c = (SVMB_HV_CONTROL*)buf;
         SVMB_LOGI("ioctl HV_CONTROL action=%u repeat=%u", c->Action, c->RepeatCount);
+        TraceMarker(c->Action == 0 ? "hvctl-start" :
+                    c->Action == 1 ? "hvctl-stop" :
+                    c->Action == 2 ? "hvctl-cycle" : "hvctl-other");
 #ifdef SVMB_PRODUCTION
-        // r85 audit P2-6: IOCTL start is the round-27 known-fatal entry
-        // context (load-time entry is the only supported mode), and the
-        // cycle loop leaks vCPU pages per round by design
+        // r85 audit P2-6 + r159: IOCTL start's entry context was the
+        // round-27 known-fatal path; r159 fixed it by delegating the
+        // ignition to a pooled system worker (seed-stack lifetime law,
+        // see the action==0 branch). The refusal stands for production on
+        // conservatism (AutoStart remains the blessed load-time mode) and
+        // because the cycle loop leaks vCPU pages per round by design
         if (c->Action == 0 || c->Action == 2)
         {
             SVMB_LOGE("HV_CONTROL action=%u refused in production", c->Action);
@@ -192,16 +204,57 @@ NTSTATUS DevCtrlLocked(PIRP irp)
                 status = STATUS_ALREADY_REGISTERED;
             else
             {
-                Hypervisor* h = new (NonPagedPoolNx, TAG_SVMB) Hypervisor();
-                if (!h)
+                // r159: the ignition seeds every core with the entering
+                // thread's register + kernel-stack snapshot (RunOnEachCore
+                // hops ONE thread core to core). AutoStart seeds the SCM
+                // load thread, whose stack lives forever; seeding
+                // svmbctl's IOCTL thread plants six snapshots on a stack
+                // that is FREED when svmbctl.exe exits seconds later -
+                // every core then fatal-exceptions on the dead stack
+                // (0xC0000503 reentry loop on the frozen machine, zero
+                // VMEXITS, hard reset ~10s after; r159 hunt12/13, the
+                // round-27 "known-fatal entry context"). Delegate to a
+                // pooled system worker: worker stacks outlive the work
+                // item, making the IOCTL entry exactly AutoStart-shaped.
+                struct StartCtx
+                {
+                    KEVENT Done;
+                    NTSTATUS Status;
+                };
+                StartCtx ctx;
+                KeInitializeEvent(&ctx.Done, NotificationEvent, FALSE);
+                ctx.Status = STATUS_UNSUCCESSFUL;
+                PIO_WORKITEM work = IoAllocateWorkItem(gDevice);
+                if (!work)
+                {
                     status = STATUS_INSUFFICIENT_RESOURCES;
+                }
                 else
                 {
-                    // Start() rolls itself back internally on failure, so the
-                    // object can be freed right away
-                    status = h->Start();
-                    if (!NT_SUCCESS(status))
-                        delete h;
+                    struct Both
+                    {
+                        StartCtx* Ctx;
+                    } both = {&ctx};
+                    auto routine = +[](PDEVICE_OBJECT, PVOID P) {
+                        Both* b = (Both*)P;
+                        // Start() rolls itself back internally on failure,
+                        // so the object can be freed right away
+                        Hypervisor* h = new (NonPagedPoolNx, TAG_SVMB) Hypervisor();
+                        if (!h)
+                            b->Ctx->Status = STATUS_INSUFFICIENT_RESOURCES;
+                        else
+                        {
+                            b->Ctx->Status = h->Start();
+                            if (!NT_SUCCESS(b->Ctx->Status))
+                                delete h;
+                        }
+                        KeSetEvent(&b->Ctx->Done, IO_NO_INCREMENT, FALSE);
+                    };
+                    IoQueueWorkItem(work, routine, DelayedWorkQueue, &both);
+                    KeWaitForSingleObject(&ctx.Done, Executive, KernelMode,
+                                          FALSE, nullptr);
+                    IoFreeWorkItem(work);
+                    status = ctx.Status;
                 }
             }
         }
@@ -598,6 +651,74 @@ NTSTATUS DevCtrlLocked(PIRP irp)
         // consumed by the debugger module as an event (never shown to guest)
         if (dbg->ArmSingleStep)
             svmb::DebuggerArmSingleStep();
+        status = STATUS_SUCCESS;
+        break;
+    }
+
+    case SVMB_IOCTL_HVIEW:
+    {
+        if (inLen < sizeof(u32))
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        // r177: the registration face for external H drivers. The default
+        // captures the CALLING thread's CR3 - the context the external
+        // H's kernel code runs in. r185: NtLoadDriver marshals
+        // DriverEntry to the System process (probe-proven: entry pid=4,
+        // cr3 != loader's), and in-DriverEntry SVM checks (reference-hypervisor
+        // CheckSVM) see the stealth face there unless pid 4 is
+        // registered too - hence Pid-based registration through the r133
+        // Cr3M4PidToCr3 resolver.
+        u32 reg = *(u32*)buf;
+        u32 pid = inLen >= sizeof(SVMB_HVIEW_CTL)
+                      ? ((SVMB_HVIEW_CTL*)buf)->Pid
+                      : 0; // old (r177) 4-byte clients: self only
+        u64 cr3 = __readcr3();
+        if (pid != 0)
+        {
+            if (!Cr3M4PidToCr3(pid, &cr3))
+            {
+                SVMB_LOGE("hview: pid=%u cr3 resolve failed", pid);
+                status = STATUS_INVALID_PARAMETER;
+                break;
+            }
+            SVMB_LOGI("hview: pid=%u resolved cr3=%016llx %s", pid, cr3,
+                      reg ? "(reg)" : "(unreg)");
+        }
+        if (reg)
+            svmb::NestedHViewRegister(cr3);
+        else
+            svmb::NestedHViewUnregister(cr3);
+        status = STATUS_SUCCESS;
+        break;
+    }
+
+    case SVMB_IOCTL_VLOG:
+    {
+        if (inLen < sizeof(SVMB_VLOG_CTL) || outLen < sizeof(SVMB_VLOG_OUT))
+        {
+            status = STATUS_BUFFER_TOO_SMALL;
+            break;
+        }
+        SVMB_VLOG_CTL* v = (SVMB_VLOG_CTL*)buf;
+        SVMB_VLOG_OUT* o = (SVMB_VLOG_OUT*)buf;
+        u32 maxRec = v->Max ? v->Max : 256;
+        u32 roomBytes = outLen - sizeof(SVMB_VLOG_OUT);
+        if (maxRec > roomBytes / sizeof(SVMB_VLOG_REC))
+            maxRec = roomBytes / sizeof(SVMB_VLOG_REC);
+        // drain only for the read op - stats/mask/reset must not
+        // consume records
+        u32 dropped = 0;
+        u32 n = v->Op == 0 ? svmb::VlogRead(o + 1, maxRec, &dropped) : 0;
+        o->Count = n;
+        o->Dropped = dropped;
+        svmb::VlogStats(o->KindCount, o->TopExits);
+        if (v->Op == 2)
+            svmb::VlogSetMask(v->Mask);
+        else if (v->Op == 3)
+            svmb::VlogReset();
+        info = sizeof(SVMB_VLOG_OUT) + (ULONG_PTR)n * sizeof(SVMB_VLOG_REC);
         status = STATUS_SUCCESS;
         break;
     }
@@ -1088,7 +1209,9 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT driver, PUNICODE_STRING)
     //                            -> file = black-box recorder that survives the
     //                            death of the VM, unlike buffered DbgPrint)
     //   HideCpuidBits  DWORD 0   disable the CPUID SVM/NPT bit hiding (bisect)
-    //   ProtectHsave   DWORD 0   disable VM_HSAVE_PA interception (bisect)
+    //   ProtectHsave   DWORD 0   disable VM_HSAVE_PA interception (bisect;
+    //                            default ON since r167 - leaks the real HSAVE
+    //                            PA to guest readers when off)
     //   NptEnable      DWORD 1   tier-3 gate: bring NPT live at start (M3
     //                            activation; do NOT set until the start
     //                            crash-line is resolved)
@@ -1106,6 +1229,7 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT driver, PUNICODE_STRING)
     ULONG tlbMode = 0;   // r58 A/B: 0 = flush-all armed (r54 semantics),
                          // 1 = never arm flush-all (reference semantics)
     ULONG guestAsid = 1; // r58 A/B: VMCB GuestAsid (the reference also uses 1)
+    ULONG cr8Repoll = 0; // r148: 1 restores the r143 per-exit CR8 re-poll
     ULONG wiggleMode = 2; // r80: 0=off 1=back-to-back kick (r77) 2=real
                           // wiggle (scratch observed at next VMRUN, restore
                           // from the re-arm DPC)
@@ -1117,6 +1241,7 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT driver, PUNICODE_STRING)
                             // CR3_READVM (deployment hardening knob)
 #endif
     ULONG tscProbe = 0;   // r92: TSC offset probe (vhv TscOffset-honor check)
+    ULONG nestedIntrPunt = 0; // r197: nested INTR punt gate (default off)
     // r102: behavior-alert thresholds (sensed-burst alarms - see the
     // sampling note in modules/sysaudit.cpp; defaults = protocol consts)
     ULONG behaveRd = SVMB_SYSAUD_BEHAVE_RD_THS;
@@ -1124,13 +1249,17 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT driver, PUNICODE_STRING)
     ULONG behaveOp = SVMB_SYSAUD_BEHAVE_OP_THS;
     ULONG behaveResp = 0; // r105: 0 = telemetry only (default)
     {
-        RTL_QUERY_REGISTRY_TABLE table[16] = {};
+        RTL_QUERY_REGISTRY_TABLE table[18] = {};
         // Defaults chosen to mirror hypervisor.cpp's compiled-in baseline
-        // (see CRASH_DEBUG_LOG round 5): protectHsave=0, hideBits=1. The
-        // offline subsystem alloc (gNpt/gHooks/gCr3Seed/gDbgRing below)
+        // (see CRASH_DEBUG_LOG round 5): hideBits=1. ProtectHsave flipped
+        // default 0->1 in r167: the r165 L2 baseline proved the unarmed
+        // HSAVE MSR leaks the real HSAVE PA to any guest reader (the
+        // handler's read-0/drop-write semantics were already correct -
+        // only the intercept was off, a bisect-era leftover).
+        // The offline subsystem alloc (gNpt/gHooks/gCr3Seed/gDbgRing below)
         // is order-tolerant - if it fails we tear down what we already
         // allocated before returning.
-        ULONG serialLog = 0, hideBits = 1, protectHsave = 0;
+        ULONG serialLog = 0, hideBits = 1, protectHsave = 1;
         table[0].Flags = RTL_QUERY_REGISTRY_DIRECT;
         table[0].Name = (PWSTR)L"SerialLog";
         table[0].EntryContext = &serialLog;
@@ -1187,7 +1316,16 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT driver, PUNICODE_STRING)
         table[13].Name = (PWSTR)L"BehaveResponse";
         table[13].EntryContext = &behaveResp;
         table[13].DefaultType = REG_NONE;
-        // table[15] stays all-zero: RtlQueryRegistryValues needs the
+        // r148: per-exit CR8 re-poll master switch (0 = suspended)
+        table[14].Flags = RTL_QUERY_REGISTRY_DIRECT;
+        table[14].Name = (PWSTR)L"Cr8Repoll";
+        table[14].EntryContext = &cr8Repoll;
+        table[14].DefaultType = REG_NONE;
+        table[15].Flags = RTL_QUERY_REGISTRY_DIRECT;
+        table[15].Name = (PWSTR)L"NestedIntrPunt";
+        table[15].EntryContext = &nestedIntrPunt;
+        table[15].DefaultType = REG_NONE;
+        // table[16] stays all-zero: RtlQueryRegistryValues needs the
         // NULL-Name terminator entry (that terminator is why [10] worked
         // with only 9 slots filled before)
         RtlQueryRegistryValues(RTL_REGISTRY_ABSOLUTE,
@@ -1195,9 +1333,11 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT driver, PUNICODE_STRING)
                                L"\\Services\\svmb\\Parameters",
                                table, nullptr, nullptr);
         LogSetSerial(serialLog != 0);
+        svmbNestedIntrPunt(nestedIntrPunt ? 1 : 0); // r197 gate
         GuestCpuidHideEnabled = hideBits ? 1 : 0;
         HsaveProtectionEnabled = protectHsave ? 1 : 0;
         Hypervisor::SetTlbKnobs(tlbMode, guestAsid);
+        Hypervisor::SetCr8Repoll(cr8Repoll);
         svmb::Cr3MonitorSetWiggleMode((u32)wiggleMode);
         g_readVmEnable = readVmEnable ? 1 : 0;
         TscProbeEnabled = tscProbe ? 1 : 0;
@@ -1359,6 +1499,8 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT driver, PUNICODE_STRING)
     Cr3RegionKillInit(gDevice);
     svmb::SysAuditResInit(gDevice); // r103 target-handle resolver
     svmb::CrumbInit(); // r107 freeze flight recorder (test builds)
+    svmb::VlogInit(); // r181 third-party-H behavior recorder (reflection
+                      // path only - costs nothing with no nested session)
 
     status = IoCreateSymbolicLink(&gDosName, &devName);
     if (!NT_SUCCESS(status))
@@ -1368,6 +1510,7 @@ extern "C" NTSTATUS DriverEntry(PDRIVER_OBJECT driver, PUNICODE_STRING)
         IoDeleteDevice(gDevice);
         gDevice = nullptr;
         OfflineTeardown();
+        svmb::VlogDeinit();
         LogDeinit();
         return status;
     }

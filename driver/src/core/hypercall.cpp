@@ -1,7 +1,9 @@
 #include "core/hypercall.h"
 #include "core/hypervisor.h"
+#include "core/nested.h"
 #include "hw/svm_defs.h"
 #include "platform/logger.h"
+#include "core/vlog.h" // r185: mask diagnosis record
 
 
 namespace svmb
@@ -215,8 +217,19 @@ bool HandleCpuidExit(GuestContext& ctx, void* ud)
     // result's EAX, which never equals the leaf constant
     u32 leaf = (u32)ctx.Regs->Rax;
     EmulateCpuid(ctx);
-    if (GuestCpuidHideEnabled)
+    if (GuestCpuidHideEnabled && !NestedHViewActive(ctx.GuestCr3()))
     {
+        // r185 diagnosis: which CR3 does an in-DriverEntry SVM leaf see
+        // when the H-view registration missed it? Gate-free UART so the
+        // line lands in com1.log no matter the log config.
+        if (leaf == CPUID_EXT_FEATURES || leaf == CPUID_SVM_FEATURES)
+        {
+            LogSerialTraceF("R185MASK leaf=%08x cr3=%016llx",
+                            leaf, ctx.GuestCr3());
+            // belt and braces: the vlog ring is a proven-live channel
+            VlogRecord(6, (u8)CurrentCpuIndex(), 0x185, leaf,
+                       ctx.GuestCr3(), ctx.Regs->Rip);
+        }
         if (leaf == CPUID_EXT_FEATURES)
             ctx.Regs->Rcx &= ~(1ull << SVM_CPUID_BIT);
         if (leaf == CPUID_SVM_FEATURES)
@@ -226,11 +239,55 @@ bool HandleCpuidExit(GuestContext& ctx, void* ud)
     return true;
 }
 
+bool HandleHltExit(GuestContext& ctx, void* ud)
+{
+    UNREFERENCED_PARAMETER(ud);
+    // r140 TCG compat: QEMU's halted-vCPU wake path breaks after a
+    // stop/start re-entry - a device IRQ lands in the LAPIC IRR but the
+    // parked vCPU thread is never kicked (frozen-bench evidence: cores
+    // in HLT with IF=1, TPR=0 and a deliverable IRR vector, forever).
+    // Emulate hlt instead of letting the vCPU thread sleep: nap a
+    // bounded slice, then resume the guest. Idle cores poll instead of
+    // parking, and pending interrupts ride TCG's live-guest injection
+    // path, which keeps working in every generation.
+    static volatile LONG s_hltSeen = 0;
+    if (InterlockedIncrement(&s_hltSeen) <= 3)
+        SVMB_LOGW("hlt-emulate: fired cpu=%u count=%ld",
+                  (unsigned)KeGetCurrentProcessorNumberEx(nullptr), s_hltSeen);
+    KeStallExecutionProcessor(100); // ~100us per idle spin
+    ctx.AdvanceRip = true;
+    return true;
+}
+
 bool HandleMsrExit(GuestContext& ctx, void* ud)
 {
     UNREFERENCED_PARAMETER(ud);
     u32 msr = (u32)ctx.Regs->Rcx;
     bool isWrite = (ctx.Info1 & 1) != 0;
+
+    // r171: a registered H context serves EFER/VM_CR/VM_HSAVE_PA from its
+    // virtual SVM view (the EFER-tension adjudication) - SVME visible and
+    // settable, its own HSAVE, no forced SVMDIS. Stealth face intact for
+    // everyone else; the real MSRs are never touched on this path.
+    {
+        u64 value = isWrite
+                        ? ((ctx.Regs->Rax & 0xFFFFFFFF) |
+                           (ctx.Regs->Rdx << 32))
+                        : 0;
+        bool served = false;
+        u64 v = NestedHViewServe(ctx.GuestCr3(), isWrite, msr, value,
+                                 &served);
+        if (served)
+        {
+            if (!isWrite)
+            {
+                ctx.Regs->Rax = (u32)v;
+                ctx.Regs->Rdx = (u32)(v >> 32);
+            }
+            ctx.AdvanceRip = true;
+            return true;
+        }
+    }
 
     if (msr == MSR_VM_CR)
     {
@@ -306,12 +363,11 @@ bool HandleMsrExit(GuestContext& ctx, void* ud)
 bool HandleVmrunExit(GuestContext& ctx, void* ud)
 {
     UNREFERENCED_PARAMETER(ud);
-    // anti-nesting: guest tries to enter SVM. Inject #BP with int3 (software
-    // interrupt) semantics and resume at NRip so the VMRUN itself is skipped -
-    // injecting without advancing would re-execute VMRUN forever
-    InjectEvent(ctx, EXC_BP, EVT_SOFTINT, false, 0);
-    ctx.AdvanceRip = true;
-    return true;
+    // r140 anti-nesting -> r166 nested v1: the guest's hypervisor ("H")
+    // VMRUN now enters software nesting (VMCB accept + L2 re-entry +
+    // exit reflection); contract violations keep the r140 rejection
+    // semantics inside (stage-0's zeroed VMCB still gets the #BP)
+    return NestedVmrunExit(ctx);
 }
 
 } // namespace svmb

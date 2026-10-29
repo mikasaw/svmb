@@ -76,14 +76,34 @@ void SerialPut(char c)
     // wait for transmit empty (bounded). A stalled/holographic UART reads
     // LSR as 0xFF (floating bus) - detected once in SerialWrite and reported
     // through LogUartProbe; skip the pointless wait in that case.
-    for (int i = 0; i < 10000; ++i)
+    // r141: under QEMU TCG the wait is skipped entirely. The bench sink is
+    // `-serial file:` which never applies backpressure, so THRE is the
+    // only thing being polled for - and once the emulated UART's THRE
+    // stops setting (observed mid-cycle after a stop/start re-entry),
+    // every character burns the full 10000-iteration LSR poll: a 60-char
+    // line becomes seconds of port IO INSIDE the VMM exit path, melting
+    // exit handling and killing the serial channel itself (ctl still
+    // reported HV_CONTROL ok while the stop prints never landed - see
+    // CRASH_DEBUG_LOG r140/r141). Blind write: the file sink swallows it.
+    static int s_tcgBlind = -1;
+    if (s_tcgBlind < 0)
     {
-        u8 lsr = __inbyte(COM1 + 5);
-        if (lsr == 0xFF)
-            break; // no device decoding: write blind
-        if (lsr & 0x20)
-            break;
-        __nop();
+        // one-time lazy probe: no NRIP-save in CPUID.8000000A.EDX == TCG
+        int c[4] = {};
+        __cpuid(c, 0x8000000A);
+        s_tcgBlind = (c[3] & 1) ? 0 : 1; // EDX bit0 = NRIPS
+    }
+    if (!s_tcgBlind)
+    {
+        for (int i = 0; i < 10000; ++i)
+        {
+            u8 lsr = __inbyte(COM1 + 5);
+            if (lsr == 0xFF)
+                break; // no device decoding: write blind
+            if (lsr & 0x20)
+                break;
+            __nop();
+        }
     }
     __outbyte(COM1, (u8)c);
 }
@@ -116,6 +136,19 @@ void SerialWrite(const char* s, u32 len)
 void LogSerialTrace(const char* tag)
 {
     SerialWrite(tag, (u32)strlen(tag));
+}
+
+// r185: formatted gate-free UART trace (diagnosis lines that must land in
+// com1.log regardless of MinLevel/Serial configuration)
+void LogSerialTraceF(const char* fmt, ...)
+{
+    char buf[128];
+    va_list ap;
+    va_start(ap, fmt);
+    NTSTATUS st = RtlStringCbVPrintfA(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    if (NT_SUCCESS(st))
+        SerialWrite(buf, (u32)strlen(buf));
 }
 
 void LogUartProbe()

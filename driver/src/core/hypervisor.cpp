@@ -6,6 +6,8 @@
 #include "hw/svm_defs.h"
 #include "platform/logger.h"
 #include "platform/util.h"
+#include "core/nested.h"         // r166: L2 exit reflection gate
+#include "platform/marker.h"
 
 
 namespace svmb
@@ -35,6 +37,10 @@ struct MachineFrame
     u64 Ss;
 };
 
+// Set by CheckCpu() when CPUID.8000000A.EDX.NRIPS is absent (QEMU TCG).
+// SvmbVmExitEntry reconstructs Ctrl.NRip for every intercept-class exit.
+static bool s_noNripsCompat = false;
+
 // VMEXIT class table: whether NRip points at the NEXT instruction (advance)
 // or at the faulting instruction (re-execute)
 bool IsFaultClassExit(u64 exit)
@@ -46,7 +52,60 @@ bool IsFaultClassExit(u64 exit)
            exit == vmexit::VINTR;
 }
 
+// TCG NRIP fallback: byte length of the instruction that raised an
+// intercept-class exit. Closed set - svmb only ever sees exits its own
+// intercept bitmap enables (baseline CPUID/MSR/VMRUN plus module-added
+// CR/DR/VMMCALL/RDTSCP-family bits), and every one of those instructions
+// is fixed-length with no prefix games in the kernel paths we trap.
+// Returns 0 for exits with no confident length (variable/prefixed);
+// those are not in svmb's intercept set today and are logged loudly.
+static u32 InterceptInstrLen(u64 exit)
+{
+    u32 lo = (u32)exit;
+    switch (exit)
+    {
+    case vmexit::CPUID:            return 2;  // 0F A2
+    case vmexit::MSR:              return 2;  // 0F 30 / 0F 32 (RDMSR/WRMSR)
+    case vmexit::INTN:             return 1;  // 0xCC int3 (0xCD imm8 = 2 -
+                                              // HandleSwintExit advances by
+                                              // its own byte-read; this entry
+                                              // only keeps the no-NRIP
+                                              // reconstruction quiet)
+    case vmexit::RDTSC:            return 2;  // 0F 31
+    case vmexit::RDPMC:            return 2;  // 0F 33
+    case vmexit::INVD:             return 2;  // 0F 08
+    case vmexit::WBINVD:           return 2;  // 0F 09
+    case vmexit::PAUSE:            return 2;  // F3 90
+    case vmexit::HLT:              return 1;  // F4
+    case vmexit::ICEBP:            return 1;  // F1
+    case vmexit::VMRUN:            return 3;  // 0F 01 D8
+    case vmexit::VMMCALL:          return 3;  // 0F 01 D9
+    case vmexit::VMLOAD:           return 3;  // 0F 01 DA
+    case vmexit::VMSAVE:           return 3;  // 0F 01 DB
+    case vmexit::STGI:             return 3;  // 0F 01 DC
+    case vmexit::CLGI:             return 3;  // 0F 01 DD
+    case vmexit::SKINIT:           return 3;  // 0F 01 DE
+    case vmexit::INVLPGA:          return 3;  // 0F 01 DF
+    case vmexit::RDTSCP:           return 3;  // 0F 01 F9
+    case vmexit::MONITOR:          return 3;  // 0F 01 C8
+    case vmexit::MWAIT:            return 3;  // 0F 01 C9
+    case vmexit::XSETBV:           return 3;  // 0F 01 D6
+    case vmexit::EFER_WRITE_TRAP:  return 2;  // underlying WRMSR
+    default:
+        // MOV CRn / MOV DRn: 0F 20/22 / 0F 21/23 + modrm (reg-reg, no SIB)
+        if ((lo >= (u32)vmexit::CR_READ(0)  && lo <= (u32)vmexit::CR_WRITE(15)) ||
+            (lo >= (u32)vmexit::DR_READ(0)  && lo <= (u32)vmexit::DR_WRITE(15)) ||
+            (lo >= (u32)vmexit::CR_WRITE_TRAP(0) && lo <= (u32)vmexit::CR_WRITE_TRAP(15)) ||
+            (lo >= (u32)vmexit::IDTR_READ && lo <= (u32)vmexit::TR_READ) ||   // SIDT/SGDT/SLDT/STR
+            (lo >= (u32)vmexit::IDTR_WRITE && lo <= (u32)vmexit::TR_WRITE))    // LIDT/LGDT/LLDT/LTR
+            return 3;
+        return 0;
+    }
+}
+
 } // namespace
+
+bool Hypervisor::TcgCompat() { return s_noNripsCompat; }
 
 SvmCheckResult Hypervisor::CheckCpu()
 {
@@ -95,16 +154,22 @@ SvmCheckResult Hypervisor::CheckCpu()
                   (u32)out[3]);
         return SvmCheckResult::NoNpt;
     }
-    // the whole exit path resumes the guest via VMCB.NRip; without NRIPS
-    // support NRip stays 0 and every intercept would send rip to address 0
+    // QEMU TCG's SVM emulation has no NRIP-save: do_vmexit() writes
+    // Save.Rip (start of the intercepted instruction) but never
+    // Ctrl.NRip (tcg/system/svm_helper.c). svmb's intercept set is closed
+    // and every member is a fixed-length instruction, so the exit path
+    // reconstructs NRip from an exit-code -> instruction-length table
+    // (see SvmbVmExitEntry) instead of refusing to virtualize.
     if (!(out[3] & (1 << NRIPS_CPUID_BIT)))
     {
-        SVMB_LOGE("svm check: NRIPS not supported (CPUID.8000000A.EDX=%08x)",
+        s_noNripsCompat = true;
+        SVMB_LOGW("svm check: NRIPS not supported (CPUID.8000000A.EDX=%08x)"
+                  " - TCG fallback: fixed-length nrip advance",
                   (u32)out[3]);
-        return SvmCheckResult::NoNrips;
     }
 
-    SVMB_LOGI("svm check: OK (AMD cpu, SVM bit=1, VM_CR.SVMDIS=0, NPT+NRIPS supported)");
+    SVMB_LOGI("svm check: OK (AMD cpu, SVM bit=1, VM_CR.SVMDIS=0, NPT supported, NRIPS=%u)",
+              (unsigned)!s_noNripsCompat);
     return SvmCheckResult::Ok;
 }
 
@@ -123,6 +188,7 @@ NTSTATUS Hypervisor::Start()
 
     NTSTATUS status;
     CoreCount_ = KeQueryActiveProcessorCountEx(ALL_PROCESSOR_GROUPS);
+    TraceMarker("start-enter"); // r141: death-proof progress channel
 
     // single failure exit: anything below that fails runs Stop(), which is
     // safe pre-enter (all vcpu states are Off -> devirtualize pass no-ops)
@@ -157,6 +223,23 @@ NTSTATUS Hypervisor::Start()
     Dispatcher_.Register(vmexit::MSR, HandleMsrExit, nullptr, CORE_TOKEN, 0);
     Dispatcher_.Register(vmexit::VMMCALL, HandleVmmcallExit, &Hypercalls_, CORE_TOKEN, 0);
     Dispatcher_.Register(vmexit::VMRUN, HandleVmrunExit, nullptr, CORE_TOKEN, 0);
+    // r168: explicit #GP refusal - native VMLOAD/VMSAVE would rewrite the
+    // real save area through a VMCB svmb does not own (see nested.cpp)
+    Dispatcher_.Register(vmexit::VMLOAD, NestedVmloadExit, nullptr,
+                         CORE_TOKEN, 0);
+    Dispatcher_.Register(vmexit::VMSAVE, NestedVmloadExit, nullptr,
+                         CORE_TOKEN, 0);
+    // r176: INVLPGA intercept - H's "flush nested translations" is the
+    // nested-shadow invalidation contract (wipe all composed windows +
+    // TLB-kick live sessions; the native invalidation is re-issued
+    // host-side so non-nested callers stay transparent). Bit armed under
+    // TcgCompat in InterceptManager::ApplyToVcpu.
+    Dispatcher_.Register(vmexit::INVLPGA, NestedInvlpgaExit, nullptr,
+                         CORE_TOKEN, 0);
+    // r140 TCG compat: hlt emulation exit (bit armed only when TcgCompat()
+    // - see InterceptManager::ApplyCore). Handler itself is inert unless
+    // the guest actually takes HLT exits.
+    Dispatcher_.Register(vmexit::HLT, HandleHltExit, nullptr, CORE_TOKEN, 0);
     // M3 skeleton: NPF handler declines while NPT is disabled, so
     // registering it unconditionally is safe for the crash-line work
     Dispatcher_.Register(vmexit::NPF, HandleNpfExit, NptInstance(),
@@ -213,11 +296,14 @@ NTSTATUS Hypervisor::Start()
         v->Info.CpuIndex = i;
         v->Info.Hv = this;
         v->Info.State = (LONG)VcpuState::Off;
-        v->Info.ExitTraceLeft = 16; // early-exit forensics budget (round-13:
+        v->Info.ExitTraceLeft = 200; // early-exit forensics budget (round-13:
                                     // was 2048, which flooded KDNET - see
                                     // SvmbVmExitEntry note; earlier hunts:
                                     // 64 ran out ~25s in, before the fatal
-                                    // exit, so 16 stays diagnostic-only)
+                                    // exit, so 16 stays diagnostic-only.
+                                    // r140: 16 -> 200 on the QEMU serial
+                                    // bench (no KDNET attached there) so
+                                    // the death-window exits stay visible)
         Vcpus_[i] = v;
     }
 
@@ -238,6 +324,55 @@ NTSTATUS Hypervisor::Start()
     }
 
     SVMB_LOGI("virtualization active on %u cores", CoreCount_);
+    TraceMarker("start-active");
+    // r141: per-core VMCB physical addresses on the death-proof channel -
+    // when the bench freezes, QMP `xp` on these PAs reads each core's
+    // LAST exit (Ctrl.ExitCode / ExitInfo1..2 / NRip / Save.Rip) straight
+    // out of the frozen VMCBs. EnterCore itself runs at IPI level (file
+    // IO impossible there), so harvest from the PASSIVE orchestrator.
+    {
+        char buf[192];
+        int n = 0;
+        n += _snprintf_s(buf + n, sizeof(buf) - n, _TRUNCATE, "vmcb-pas:");
+        for (u32 i = 0; i < CoreCount_ && i < 8; ++i)
+            n += _snprintf_s(buf + n, sizeof(buf) - n, _TRUNCATE, " %llx",
+                             Vcpus_[i] ? Vcpus_[i]->Info.GuestVmcbPa : 0ull);
+        TraceMarker(buf);
+    }
+    // r142: NPT-state marker. The r141 frozen VMCBs all carried
+    // NCr3=0x1589f3000, yet the page at that PA read back as kernel pool
+    // data, not a PML4 - either those VMCBs were stale or the NPT root got
+    // recycled between generations. Pin the truth at start: the default
+    // view's root PA, its first two entries (the [0,1TB) identity fill must
+    // leave pml4[0] pointing at a PDPT), and the NCr3 the first VMCB was
+    // actually configured with.
+    {
+        NptManager* npt = NptInstance();
+        if (npt && npt->Active())
+        {
+            char buf[160];
+            _snprintf_s(buf, sizeof(buf), _TRUNCATE,
+                        "npt-state: pml4pa=%llx pe0=%llx pe1=%llx ncr3=%llx",
+                        npt->Active()->Pml4Pa(), npt->Active()->Pml4Pe(0),
+                        npt->Active()->Pml4Pe(1),
+                        (Vcpus_ && Vcpus_[0]) ? Vcpus_[0]->GuestVmcb->Ctrl.NCr3 : 0ull);
+            TraceMarker(buf);
+        }
+        else
+            TraceMarker("npt-state: no-active-view");
+    }
+    // r143 start-kick: the gen-2 re-entry is where the QEMU TCG
+    // interrupt-delivery machinery historically desyncs (all cores lose
+    // CPU_INTERRUPT_HARD while deliverable IRRs pile up - the r142/r143
+    // freeze portraits). A real KeIpiGenericCall pushes every core through
+    // the complete, genuine interrupt delivery path (IRR->ISR->handler->
+    // EOI) right after virtualization goes active, flushing any state the
+    // stop/start transition broke. Noop callback: the traffic itself is
+    // the medicine.
+    {
+        KeIpiGenericCall([](ULONG_PTR) { return 0ull; }, 0);
+        TraceMarker("start-kick-done");
+    }
     return STATUS_SUCCESS;
 #undef SVMB_START_FAIL
 }
@@ -390,6 +525,13 @@ NTSTATUS Hypervisor::EnterCore(u32 cpuIdx)
 // (reference semantics). GuestAsid defaults to 1 (the reference uses the same).
 static ULONG s_tlbMode = 0;
 static ULONG s_guestAsid = 1;
+// r148: per-exit CR8 re-poll gate (see the r148 SUSPEND note at the call
+// site). Default OFF for the A/B verdict; Parameters\Cr8Repoll=1 restores
+// the r143 behavior if the freeze family comes back without it.
+static volatile LONG s_cr8Repoll = 0;
+
+// r157 death-window probe (layout documented in hypervisor.h)
+volatile LONG64 g_stepProbe[8] = { 0x31504644, 0, 0, 0, 0, 0, 0, 0 };
 
 void Hypervisor::ConfigureVmcb(VcpuContext* vcpu)
 {
@@ -537,6 +679,7 @@ ULONG_PTR Hypervisor::IpiNudgeCallback(ULONG_PTR Context)
     return 0;
 }NTSTATUS Hypervisor::Stop()
 {
+    TraceMarker("stop-enter"); // r141: death-proof progress channel
     if (!Running_ && !CoreCount_)
         return STATUS_SUCCESS;
 
@@ -654,6 +797,7 @@ ULONG_PTR Hypervisor::IpiNudgeCallback(ULONG_PTR Context)
     gInstance = nullptr;
 
     SVMB_LOGI("hypervisor stopped (vCPU pages leaked for safe teardown)");
+    TraceMarker("stop-done");
     return STATUS_SUCCESS;
 }
 
@@ -696,6 +840,13 @@ void Hypervisor::SetTlbKnobs(ULONG tlbMode, ULONG guestAsid)
     SVMB_LOGI("tlb knobs: tlbMode=%u asid=%u", s_tlbMode, s_guestAsid);
 }
 
+void Hypervisor::SetCr8Repoll(ULONG enable)
+{
+    s_cr8Repoll = enable ? 1 : 0;
+    SVMB_LOGI("cr8-repoll knob: %u", (ULONG)s_cr8Repoll);
+}
+
+
 ULONG Hypervisor::TlbModeKnob()
 {
     return s_tlbMode;
@@ -733,11 +884,49 @@ extern "C" void SvmbVmExitEntry(void* vcpuPtr, GuestRegs* regs)
     // [HERE -> the rest of the handler]
     CrumbPost(CRUMB_EXIT_ENTRY);
 
+    // TCG compat: with no NRIP-save the VMCB arrives with NRip=0 and
+    // Save.Rip = start of the intercepted instruction. Reconstruct NRip
+    // here, once, before every consumer (exit trace, dispatch AdvanceRip,
+    // freeze machine frame, hypercall resume contract) reads it. Written
+    // back into the VMCB so the reflection paths see it too.
+    // Must NOT be gated on NRip==0: TCG never writes the field, so on the
+    // 2nd+ exit it still holds whatever WE wrote back last time (stale
+    // nrip from a previous rip = rewind livelock, seen live as 16x
+    // "rip=...675a nrip=...6718" on serial).
+    if (s_noNripsCompat && !IsFaultClassExit(vmcb.Ctrl.ExitCode))
+    {
+        u32 len = InterceptInstrLen(vmcb.Ctrl.ExitCode);
+        if (len != 0)
+            vmcb.Ctrl.NRip = vmcb.Save.Rip + len;
+        else
+            SVMB_LOGE("nrip-fallback: no instr length for exit %llx (rip=%llx)",
+                      vmcb.Ctrl.ExitCode, vmcb.Save.Rip);
+    }
+
     // round-16 CPUID short-circuit REMOVED: v24 proved the reset is not in
     // the C++ dispatch layer (short-circuit still died). Round 18 found the
     // real divergent state instead - nonzero segment limits + DR6/DR7 in
     // the VMCB (the reference zeroes both) - fixed in FillGuestState, so the
     // normal dispatcher path is restored.
+
+    // r187b heartbeat: one gate-free UART line per core per 2^16 exits
+    // (2^20 proved unreachable before a wedge - the r187 livelock froze
+    // the machine at only a few thousand exits). During a healthy run
+    // these land every few seconds; during a wedge their silence
+    // distinguishes "vCPUs still exiting" from "frozen mid-exit" - and
+    // the last exit code printed is the wedge-point witness.
+    {
+        static volatile LONG s_hb[NESTED_MAX_CORES];
+        static volatile LONG s_hbLast[NESTED_MAX_CORES];
+        u32 hbCpu = vcpu->Info.CpuIndex < NESTED_MAX_CORES
+                        ? vcpu->Info.CpuIndex : 0;
+        LONG n = InterlockedIncrement(&s_hb[hbCpu]);
+        InterlockedExchange(&s_hbLast[hbCpu],
+                            (LONG)(u32)vmcb.Ctrl.ExitCode);
+        if ((n & 0xFFFF) == 0)
+            LogSerialTraceF("HB cpu=%u n=%ld last=%lx",
+                            hbCpu, n, s_hbLast[hbCpu]);
+    }
 
     // early-exit forensics: trace the first exits after each enter so a
     // vCPU shutdown leaves the exact fatal exit in the log/serial record.
@@ -755,6 +944,32 @@ extern "C" void SvmbVmExitEntry(void* vcpuPtr, GuestRegs* regs)
                   (unsigned)((vmcb.Save.Efer >> EFER_SVME) & 1),
                   vmcb.Ctrl.ExitInfo1);
     }
+
+    // r142/r143: QEMU TCG HARD-bit desync repair. x86_cpu_exec_interrupt
+    // clears CPU_INTERRUPT_HARD *before" confirming deliverability; when the
+    // racing LAPIC state answers "blocked", the bit stays clear while a
+    // deliverable IRR bit may sit pending, and nothing re-runs
+    // apic_update_irq until the next APIC state change. r143 taught the
+    // harder lesson: gating on "every 1024th exit" starves exactly when it
+    // matters - the post-cycle freeze caught all six cores in long
+    // user-mode stretches with ZERO exits, so the gate never fired and the
+    // desync persisted for the whole freeze. Re-poll on EVERY exit now: a
+    // same-value CR8 rewrite routes through cpu_set_apic_tpr ->
+    // apic_set_tpr -> apic_update_irq unconditionally (no same-value
+    // short-circuit, vapic inactive on this guest), while real hardware
+    // and VMware vhv see a TPR no-op.
+    //
+    // r148 SUSPEND: the per-exit host-side CR8 write is the last standing
+    // suspect for the post-cycle triple-fault family (5/5 forged-RIP at
+    // wrong_base+0x5f137a + one silent reset; hunt7 cleared the VMCB state,
+    // the MSR path, and the exit dispatcher - the crash context looks like a
+    // half-swapped injection, and this write interleaves with QEMU's
+    // clear-HARD-then-check-deliverability race on every exit). Disabled
+    // for the A/B verdict; re-enable via Parameters\Cr8Repoll=1 if the
+    // freeze family returns without it.
+    ++vcpu->Info.ExitCount;
+    if (s_cr8Repoll)
+        __writecr8(__readcr8());
 
     // r108 root fix: consume THIS core's pending TLB kick here, on the
     // owning CPU, where writing our own VMCB is safe. Same semantics as
@@ -784,6 +999,31 @@ extern "C" void SvmbVmExitEntry(void* vcpuPtr, GuestRegs* regs)
         // updated it either
     }
 
+    // r175: SWINT punt re-arm (invariant restore). HandleSwintExit punts
+    // kernel-mode software interrupts natively by clearing this VMCB's
+    // INTN bit (op1 bit21), so the re-executed instruction raises through
+    // the guest's own IDT. ApplyToVcpu maintains the invariant
+    // (TCG + BP face armed) => bit21 set, so a live punt is exactly the
+    // state "BP exception bit set, INTN bit missing" - restore the bit
+    // here on the owning core, before this exit's own VMRUN, and software
+    // interrupts intercept again from the next raise on. A face teardown
+    // meanwhile rewrote both fields wholesale, leaves them consistent, and
+    // correctly skips this restore.
+    // r187: NEVER while an L2 session runs on this core. H's own #BP
+    // request (the reference hypervisor arms vector 3, hexc=8) makes the condition true
+    // for the L2's VMCB too, and the re-arm silently undid the accept's
+    // INTN-bit clear on every entry - the L2's softint then exited 0x75,
+    // reflected into the reference hypervisor's exit-switch default (__debugbreak ->
+    // FAST_FAIL_INCORRECT_STACK 0x139, minidump-proven twice).
+    if (!NestedActive(vcpu->Info.CpuIndex) &&
+        s_noNripsCompat &&
+        (vmcb.Ctrl.InterceptOpcode1 & (1u << 21)) == 0 &&
+        (vmcb.Ctrl.InterceptException & (1u << EXC_BP)) != 0)
+    {
+        vmcb.Ctrl.InterceptOpcode1 |= 1u << 21;
+        vmcb.Ctrl.CleanBits.Bits = 0;
+    }
+
     regs->Rip = vmcb.Save.Rip;
     regs->Rsp = vmcb.Save.Rsp;
     regs->Rax = vmcb.Save.Rax;
@@ -804,6 +1044,54 @@ extern "C" void SvmbVmExitEntry(void* vcpuPtr, GuestRegs* regs)
     // ret to a null rip) on the very first exit. Only HC_EXIT_VMM re-sets them.
     regs->Extra1 = 0;
     regs->Extra2 = 0;
+
+    // r166 nested v1: while L2 runs on this core, EVERY exit reflects into
+    // H's VMCB and H resumes past its VMRUN - module dispatch never sees L2
+    // exits (see core/nested.cpp). Placed after the per-exit housekeeping
+    // (NRip reconstruction above is what fills H's Ctrl.NRip) and after the
+    // regs IN-sync so the write-back below re-syncs the restored H values.
+    // r172: NPF exits in an NP session go to the shadow composer FIRST -
+    // composed entries re-enter L2 (the faulting access retries) instead
+    // of reflecting; H's-walk-fault NPFs still reflect.
+    // r186 intent gate: only exits H's own VMCB armed reflect. The rest
+    // self-serve inline in nested.cpp (hlt nap, cpuid/msr passthrough) -
+    // NEVER the L1 dispatch below (its post-dispatch machinery - view
+    // publish, TLB mode, the r143 interrupt repair - assumes L1
+    // semantics; the s2 freeze came from falling through into it).
+    // Reflecting unordered exits hands H surprises it never asked for -
+    // the r185 reference-hypervisor wedge (forced INTR at L2's first instruction ->
+    // its generic leave path -> machine starved; the reference hypervisor's exit switch
+    // literally KeBugChecks on unhandled exits).
+    if (NestedActive(vcpu->Info.CpuIndex))
+    {
+        // r200: close the intr-delivery world window at the earliest exit,
+        // before any nested routing (compose must not run under identity)
+        NestedIntrDeliveryWindowClose(vcpu);
+        if (vmcb.Ctrl.ExitCode == vmexit::NPF &&
+            NestedFor(vcpu->Info.CpuIndex).NestedNp)
+        {
+            if (NestedShadowCompose(vcpu->Info.CpuIndex,
+                                    vmcb.Ctrl.ExitInfo2,
+                                    vmcb.Ctrl.ExitInfo1))
+                return;
+            SVMB_LOGI("shadow: npf reflect gpa=%llx info1=%llx rip=%llx",
+                      (unsigned long long)vmcb.Ctrl.ExitInfo2,
+                      (unsigned long long)vmcb.Ctrl.ExitInfo1,
+                      (unsigned long long)vmcb.Save.Rip);
+            NestedReflect(vcpu, regs);
+            return;
+        }
+        if (NestedExitOrderedByH(vcpu->Info.CpuIndex,
+                                 vmcb.Ctrl.ExitCode))
+        {
+            NestedReflect(vcpu, regs);
+            return;
+        }
+        // r186b: unordered - serve inline (closed mini-dispatch; never
+        // the L1 pipeline - the s2 freeze came from falling through)
+        NestedSelfServeExit(vcpu, regs);
+        return;
+    }
 
     GuestContext ctx = {};
     ctx.Vcpu = vcpu;

@@ -50,6 +50,13 @@ typedef uint64_t svmb_u64;
 #define SVMB_IOCTL_STRESS        SVMB_CTL(0x840)
 #define SVMB_IOCTL_SELFTEST      SVMB_CTL(0x850)
 #define SVMB_IOCTL_EXITPROF      SVMB_CTL(0x851)
+#define SVMB_IOCTL_HVIEW         SVMB_CTL(0x860)
+#define SVMB_IOCTL_VLOG          SVMB_CTL(0x870) // r181: third-party-H
+                                                // virtualization-behavior
+                                                // recorder drain/control // r177: external-H virtual
+                                                // SVM view register/unregister
+                                                // (the registration face for
+                                                // out-of-tree H drivers)
 
 // ---- info query ----
 #pragma pack(push, 8)
@@ -168,6 +175,41 @@ typedef struct _SVMB_NPT_PROBE {
                             //     sees it (spoofed when cr3 watch targets
                             //     this process; see Cr3ResolveRead)
 } SVMB_NPT_PROBE, *PSVMB_NPT_PROBE;
+
+typedef struct _SVMB_HVIEW_CTL { // IOCTL_HVIEW (r177)
+    svmb_u32 Register;  // 1 = register an H view (EFER.SVME settable in a
+                        //      virtual copy, own virtual HSAVE, CPUID SVM
+                        //      unmasked); 0 = unregister
+    svmb_u32 Pid;       // r185: 0 = the CALLING context's CR3; nonzero =
+                        //      register THAT pid's CR3 instead. NtLoadDriver
+                        //      marshals DriverEntry to the System process
+                        //      (probe-proven: entry pid=4, cr3 != loader's),
+                        //      so a driver whose init checks SVM (the reference
+                        //      hypervisor CheckSVM) needs pid 4 registered as well
+} SVMB_HVIEW_CTL, *PSVMB_HVIEW_CTL;
+
+typedef struct _SVMB_VLOG_REC {   // 48B wire record (driver-defined)
+    svmb_u64 tsc, a, b, c, d;      // payloads per kind (see core/vlog.h)
+    svmb_u32 seq;                  // monotonic record number
+    svmb_u8  kind;                 // 1=accept 2=reflect 3=compose
+                                    // 4=intent 5=h-inject 6=h-ctrl
+    svmb_u8  cpu;
+    svmb_u16 pad;
+} SVMB_VLOG_REC, *PSVMB_VLOG_REC;
+
+typedef struct _SVMB_VLOG_CTL {   // IOCTL_VLOG in: op + params
+    svmb_u32 Op;    // 0=read(drain) 1=stats 2=set mask 3=reset
+    svmb_u32 Mask;  // op2: kind mask, bit (kind-1)
+    svmb_u32 Max;   // op0: max records to drain (0 = 256)
+} SVMB_VLOG_CTL, *PSVMB_VLOG_CTL;
+
+typedef struct _SVMB_VLOG_OUT {   // IOCTL_VLOG out header; records follow
+    svmb_u32 Count;               // records returned
+    svmb_u32 Dropped;             // ring wraps skipped since last read
+    svmb_u64 KindCount[6];        // lifetime counts per kind
+    svmb_u64 TopExits[8][2];      // {bucket,count}, sorted desc
+    // SVMB_VLOG_REC recs[] follow when Op==0
+} SVMB_VLOG_OUT, *PSVMB_VLOG_OUT;
 
 typedef struct _SVMB_CR3_CONFIG {   // IOCTL_CR3_CONFIG
     svmb_u32 EnableReadSpoof;   // spoof CR3 reads for monitored processes

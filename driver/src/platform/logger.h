@@ -27,6 +27,7 @@ void LogSetSerial(bool enable);
 // DriverEntry flight recorder: mirrors "<tag>\r\n" to the VMware serial file
 // so a triple fault cannot lose the last step taken
 void LogSerialTrace(const char* tag);
+void LogSerialTraceF(const char* fmt, ...); // r185: formatted, gate-free
 
 // dumps the first-call UART register probe (captured by SerialWrite) through
 // LogWrite/KDNET - diagnostics for the serial channel itself

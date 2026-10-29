@@ -72,6 +72,13 @@ public:
     void Deinit();    // frees every table page and bookkeeping node
     bool Inited() const { return Pml4Va_ != nullptr; }
     u64 Pml4Pa() const { return Pml4Pa_; }
+    // r142: raw PML4 entry read for the start-time NPT-state marker. The
+    // r141 frozen VMCBs' NCr3 led to a page holding pool data, so the marker
+    // must be able to show what THIS view's root actually contains.
+    u64 Pml4Pe(u32 idx) const
+    {
+        return (Pml4Va_ && idx < 512) ? ((volatile u64*)Pml4Va_)[idx] : 0;
+    }
 
     // raw mapping (no RAM check): fills [gpa, gpa+len) 4K-aligned with 2M
     // large pages where possible. Mapping never lowers an existing entry:
